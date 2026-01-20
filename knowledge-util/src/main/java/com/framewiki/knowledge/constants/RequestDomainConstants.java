@@ -1,3 +1,8 @@
+package com.framewiki.knowledge.constants;
+
+/**
+ * @ProjectName: knowledge-base
+ */
 public class RequestDomainConstants {
 
     /**

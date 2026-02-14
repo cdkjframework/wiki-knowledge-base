@@ -1,8 +1,0 @@
-spring:
-  datasource:
-    redis:
-      database: 1
-      password:
-      host:
-        - 10.6.2.8
-      port: 6379

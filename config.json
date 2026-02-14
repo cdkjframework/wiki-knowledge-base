@@ -1,0 +1,35 @@
+{
+  "api_key_cipher": "CIPHER_PLACEHOLDER",
+  "db_password_cipher": "CIPHER_PLACEHOLDER",
+  "knowledge_base": {
+    "storage": {
+      "persist_dir": "kb_store"
+    },
+    "embedding": {
+      "model": "gpt-oss-20b",
+      "dimension": null,
+      "device": "auto",
+      "local_files_only": false,
+      "use_lm_studio": true
+    },
+    "rerank": {
+      "model": "gpt-oss-20b",
+      "use_lm_studio": true
+    },
+    "lm_studio": {
+      "base_url": "http://10.10.0.59:1234",
+      "api_key": "sk-lm-DeMgb9du:f4MD7wrJO3xRsq9PI8Of",
+      "timeout": 30
+    },
+    "chunking": {
+      "size": 800,
+      "overlap": 120
+    },
+    "retrieval": {
+      "candidate_multiplier": 8,
+      "min_candidates": 30,
+      "embed_weight": 0.35,
+      "rerank_weight": 0.65
+    }
+  }
+}

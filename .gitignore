@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+kb_store/
+kb_store_test/
+.idea/
+.vscode/
+config.json

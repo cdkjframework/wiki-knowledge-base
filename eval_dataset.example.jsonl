@@ -1,0 +1,4 @@
+{"query":"reset password","positive_filenames":["account_guide.md"]}
+{"query":"refund policy","expected_filename":"policy.md"}
+{"query":"api authentication","filename":"api_auth.txt"}
+

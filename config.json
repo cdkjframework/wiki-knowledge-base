@@ -1,24 +1,57 @@
 {
   "api_key_cipher": "CIPHER_PLACEHOLDER",
   "db_password_cipher": "CIPHER_PLACEHOLDER",
+  "search": {
+    "default_k": 2,
+    "max_search_results": 2
+  },
+  "history": {
+    "backend": "mysql",
+    "table": "kb_history",
+    "mysql": {
+      "host": "10.10.0.33",
+      "port": 3306,
+      "user": "root",
+      "password": "I5*Z70in82WVfDYU",
+      "database": "knowledge_base",
+      "connect_timeout": 5
+    },
+    "postgresql": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "postgres",
+      "password": "",
+      "database": "knowledge_base",
+      "connect_timeout": 5
+    }
+  },
   "knowledge_base": {
     "storage": {
-      "persist_dir": "kb_store"
+      "persist_dir": "./kb_store",
+      "model_cache_dir": "./models/hf_cache"
     },
     "embedding": {
-      "model": "gpt-oss-20b",
+      "model": "Qwen/Qwen3-Embedding-0.6B",
       "dimension": null,
       "device": "auto",
-      "local_files_only": false,
-      "use_lm_studio": true
+      "local_files_only": true,
+      "use_lm_studio": false
     },
     "rerank": {
+      "model": "Qwen/Qwen3-Reranker-0.6B",
+      "use_lm_studio": false
+    },
+    "chat": {
       "model": "gpt-oss-20b",
-      "use_lm_studio": true
+      "use_lm_studio": true,
+      "local_files_only": true,
+      "temperature": 0.2,
+      "max_tokens": 131072
     },
     "lm_studio": {
       "base_url": "http://10.10.0.59:1234",
       "api_key": "sk-lm-DeMgb9du:f4MD7wrJO3xRsq9PI8Of",
+      "chat_model": "gpt-oss-20b",
       "timeout": 30
     },
     "chunking": {

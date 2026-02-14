@@ -6,3 +6,5 @@ kb_store_test/
 .idea/
 .vscode/
 config.json
+logs/
+models/

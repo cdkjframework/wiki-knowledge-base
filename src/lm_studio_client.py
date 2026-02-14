@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, Iterator, List, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -62,6 +62,166 @@ class LmStudioClient:
             raise LmStudioRequestError(
                 f"LM Studio returned invalid JSON for {path}"
             ) from exc
+
+    def _stream_post_json(self, path: str, payload: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+        url = f"{self.base_url}{path}"
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        req = Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="ignore").strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("data:"):
+                        payload_text = line[5:].strip()
+                    else:
+                        payload_text = line
+                    if payload_text == "[DONE]":
+                        break
+                    if not payload_text:
+                        continue
+                    try:
+                        yield json.loads(payload_text)
+                    except Exception as exc:
+                        raise LmStudioRequestError(
+                            f"LM Studio returned invalid streaming JSON for {path}: {payload_text[:200]}"
+                        ) from exc
+        except HTTPError as exc:
+            try:
+                err_body = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                err_body = ""
+            raise LmStudioRequestError(
+                f"LM Studio request failed ({exc.code}) for {path}: {err_body or exc.reason}",
+                status_code=exc.code,
+            ) from exc
+        except URLError as exc:
+            raise LmStudioRequestError(
+                f"LM Studio request failed for {path}: {exc}",
+                status_code=None,
+            ) from exc
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            return "".join(parts)
+        return ""
+
+    def _extract_chat_text(self, resp: Dict[str, Any]) -> str:
+        choices = resp.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        message = first.get("message")
+        if isinstance(message, dict):
+            text = self._content_to_text(message.get("content"))
+            if text:
+                return text
+        text = first.get("text")
+        if isinstance(text, str):
+            return text
+        return ""
+
+    def _extract_stream_text(self, chunk: Dict[str, Any]) -> str:
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        delta = first.get("delta")
+        if isinstance(delta, dict):
+            text = self._content_to_text(delta.get("content"))
+            if text:
+                return text
+        message = first.get("message")
+        if isinstance(message, dict):
+            text = self._content_to_text(message.get("content"))
+            if text:
+                return text
+        text = first.get("text")
+        if isinstance(text, str):
+            return text
+        return ""
+
+    def _build_chat_payload(
+        self,
+        messages: Sequence[Dict[str, Any]],
+        model: str,
+        stream: bool,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **extra: Any,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": list(messages),
+            "stream": bool(stream),
+        }
+        if temperature is not None:
+            payload["temperature"] = float(temperature)
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+        payload.update(extra)
+        return payload
+
+    def chat_once(
+        self,
+        messages: Sequence[Dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **extra: Any,
+    ) -> str:
+        payload = self._build_chat_payload(
+            messages=messages,
+            model=model,
+            stream=False,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **extra,
+        )
+        resp = self._post("/v1/chat/completions", payload)
+        return self._extract_chat_text(resp)
+
+    def chat_stream(
+        self,
+        messages: Sequence[Dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **extra: Any,
+    ) -> Iterator[str]:
+        payload = self._build_chat_payload(
+            messages=messages,
+            model=model,
+            stream=True,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **extra,
+        )
+        for chunk in self._stream_post_json("/v1/chat/completions", payload):
+            text = self._extract_stream_text(chunk)
+            if text:
+                yield text
 
     def embed_texts(self, texts: Sequence[str], model: str) -> np.ndarray:
         payload = {"model": model, "input": list(texts)}

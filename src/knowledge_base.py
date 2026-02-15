@@ -254,6 +254,11 @@ class KnowledgeBase:
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
             else:
                 self.device = str(cfg_device)
+        logger.info(
+            "Inference device selected: %s (cuda_available=%s)",
+            self.device,
+            torch.cuda.is_available(),
+        )
 
         lm_base = (os.getenv("LM_STUDIO_BASE_URL") or cfg_lm_base or "").strip()
         self.lm_studio_base_url = lm_base or None
@@ -577,6 +582,23 @@ class KnowledgeBase:
         if not chosen_model:
             raise RuntimeError("No chat model configured")
         return self._chat_backend.chat_once(
+            messages=messages,
+            model=chosen_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    def chat_stream(
+        self,
+        messages: Sequence[Dict[str, Any]],
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Sequence[str]:
+        chosen_model = str(model or self.chat_model_name or "").strip()
+        if not chosen_model:
+            raise RuntimeError("No chat model configured")
+        return self._chat_backend.chat_stream(
             messages=messages,
             model=chosen_model,
             temperature=temperature,
@@ -1104,6 +1126,118 @@ class KnowledgeBase:
         if not (text or "").strip():
             text = self._decode_uploaded_text_bytes(data, encoding=encoding)
         return self.add_document(filename_clean, text)
+
+    def list_chunks(
+        self,
+        page_index: int = 1,
+        page_size: int = 20,
+        filename: str | None = None,
+        query: str | None = None,
+    ) -> Dict[str, Any]:
+        page_index = max(1, int(page_index))
+        page_size = max(1, int(page_size))
+        filename_key = self._filename_key(filename) if filename else None
+        query_norm = (query or "").strip().lower()
+
+        items: List[Dict[str, Any]] = []
+        for idx, chunk in enumerate(self._chunks):
+            if filename_key and self._filename_key(chunk.filename) != filename_key:
+                continue
+            if query_norm and query_norm not in (chunk.text or "").lower():
+                continue
+            items.append(
+                {
+                    "id": int(idx),
+                    "filename": chunk.filename,
+                    "text": chunk.text,
+                    "char_count": len(chunk.text or ""),
+                }
+            )
+
+        total = len(items)
+        start = (page_index - 1) * page_size
+        end = start + page_size
+        return {"total": total, "items": items[start:end]}
+
+    def update_chunk(self, chunk_id: int, text: str) -> None:
+        idx = int(chunk_id)
+        if idx < 0 or idx >= len(self._chunks):
+            raise IndexError("chunk_id out of range")
+        new_text = (text or "").strip()
+        if not new_text:
+            raise ValueError("text is required")
+        vecs = self._embed_texts([new_text])
+        if vecs.shape[0] != 1:
+            raise RuntimeError("Embedding count mismatch while updating chunk")
+        self._chunks[idx].text = new_text
+        if self._embeddings.size == 0:
+            self._embeddings = vecs
+        else:
+            self._embeddings[idx] = vecs[0]
+        self._rebuild_index()
+        self._save()
+
+    def delete_chunk(self, chunk_id: int) -> None:
+        idx = int(chunk_id)
+        if idx < 0 or idx >= len(self._chunks):
+            raise IndexError("chunk_id out of range")
+        self._chunks.pop(idx)
+        if self._embeddings.size > 0:
+            self._embeddings = np.delete(self._embeddings, idx, axis=0)
+        else:
+            dim = int(self.dimension or 1024)
+            self._embeddings = np.zeros((0, dim), dtype=np.float32)
+        self._rebuild_index()
+        self._save()
+
+    def rebuild_chunks_for_filename(self, filename: str) -> int:
+        filename_norm = self._normalize_filename(filename)
+        if not filename_norm:
+            raise ValueError("filename is required")
+
+        target_key = self._filename_key(filename_norm)
+        texts = [c.text for c in self._chunks if self._filename_key(c.filename) == target_key]
+        if not texts:
+            raise FileNotFoundError(f"No chunks found for filename: {filename_norm}")
+
+        keep_idx = [
+            i for i, c in enumerate(self._chunks) if self._filename_key(c.filename) != target_key
+        ]
+        self._chunks = [self._chunks[i] for i in keep_idx]
+        if self._embeddings.size > 0:
+            self._embeddings = self._embeddings[keep_idx]
+        else:
+            dim = int(self.dimension or 1024)
+            self._embeddings = np.zeros((0, dim), dtype=np.float32)
+
+        merged = "\n".join(t for t in texts if (t or "").strip()).strip()
+        if not merged:
+            self._rebuild_index()
+            self._save()
+            return 0
+
+        parts = self._split_text(merged)
+        if not parts:
+            self._rebuild_index()
+            self._save()
+            return 0
+
+        vecs = self._embed_texts(parts)
+        if vecs.shape[0] != len(parts):
+            raise RuntimeError("Embedding count mismatch while rebuilding chunks")
+
+        new_chunks = [_Chunk(filename=filename_norm, text=part) for part in parts]
+        if self._embeddings.size == 0:
+            self._embeddings = vecs
+        else:
+            self._embeddings = np.vstack([self._embeddings, vecs]).astype(
+                np.float32, copy=False
+            )
+        self._chunks.extend(new_chunks)
+        self.dimension = int(self._embeddings.shape[1])
+        self._rebuild_index()
+        self._save()
+        return len(new_chunks)
 
     def add_files(self, file_paths: Sequence[str]) -> int:
         total = 0

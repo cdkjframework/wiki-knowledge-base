@@ -208,3 +208,28 @@ class ChatModel:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+
+    def chat_stream(
+        self,
+        messages: Sequence[Dict[str, Any]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Sequence[str]:
+        if self.use_lm_studio and self._lm_client is not None:
+            logger.info("Chat stream via LM Studio: model=%s", model)
+            return self._lm_client.chat_stream(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        logger.info("Chat stream via local model: model=%s", model)
+        return [
+            self._local_chat_once(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        ]

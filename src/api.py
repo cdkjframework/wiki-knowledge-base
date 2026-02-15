@@ -3,7 +3,9 @@ from email.parser import BytesParser
 from email.policy import default
 import json
 import logging
+import mimetypes
 import os
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -20,6 +22,9 @@ except ImportError:  # pragma: no cover
     from knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = PROJECT_ROOT / "web"
+DOCS_DIR = PROJECT_ROOT / "docs"
 
 
 class KnowledgeBaseApi:
@@ -27,6 +32,9 @@ class KnowledgeBaseApi:
     def __init__(self, knowledge_base: KnowledgeBase):
         self.kb = knowledge_base
         self._history_store = self._init_history_store()
+        self._chat_context_cfg = self._load_project_config().get("chat_context", {})
+        if not isinstance(self._chat_context_cfg, dict):
+            self._chat_context_cfg = {}
 
     @staticmethod
     def _now_iso() -> str:
@@ -46,6 +54,58 @@ class KnowledgeBaseApi:
             response=response,
             error=error,
         )
+
+    def _chat_context_enabled(self) -> bool:
+        enabled = self._chat_context_cfg.get("enabled", False)
+        return bool(enabled)
+
+    def _chat_context_max_turns(self) -> int:
+        raw = self._chat_context_cfg.get("max_turns", 6)
+        try:
+            return max(1, int(raw))
+        except Exception:
+            return 6
+
+    def _load_chat_context(self, user_id: str | None, session_id: str | None) -> List[Dict[str, Any]]:
+        if not self._chat_context_enabled():
+            return []
+        if not user_id or not session_id:
+            return []
+
+        max_turns = self._chat_context_max_turns()
+        raw = self._history_store.get(limit=max_turns * 6, action="query")
+        filtered = [
+            item for item in raw
+            if str(item.get("request", {}).get("user_id") or "") == user_id
+            and str(item.get("request", {}).get("session_id") or "") == session_id
+        ]
+        messages: List[Dict[str, Any]] = []
+        for item in filtered:
+            resp = item.get("response", {}) if isinstance(item, dict) else {}
+            resp_msgs = resp.get("messages") if isinstance(resp, dict) else None
+            if isinstance(resp_msgs, list) and resp_msgs:
+                for msg in resp_msgs:
+                    if not isinstance(msg, dict):
+                        continue
+                    role = str(msg.get("role", "")).strip().lower()
+                    if role not in {"user", "assistant"}:
+                        continue
+                    content = msg.get("content")
+                    if content:
+                        messages.append({"role": role, "content": content})
+                continue
+
+            req = item.get("request", {}) if isinstance(item, dict) else {}
+            question = req.get("query")
+            if question:
+                messages.append({"role": "user", "content": str(question)})
+            answer = resp.get("answer") if isinstance(resp, dict) else None
+            if answer:
+                messages.append({"role": "assistant", "content": str(answer)})
+
+        if len(messages) > max_turns * 2:
+            messages = messages[-max_turns * 2 :]
+        return messages
 
     @staticmethod
     def _load_project_config() -> Dict[str, Any]:
@@ -149,19 +209,15 @@ class KnowledgeBaseApi:
                 break
         return "\n\n".join(blocks).strip()
 
-    def _answer_from_lm_studio(
-        self,
-        question: str,
-        results: Sequence[Dict[str, Any]],
-        llm_model: str | None = None,
-        temperature: float | None = 0.2,
-        max_tokens: int | None = None,
-    ) -> str:
-        model = self._resolve_llm_model(llm_model)
+    def _build_chat_prompts(
+        self, question: str, results: Sequence[Dict[str, Any]]
+    ) -> tuple[str, str]:
         context = self._build_context(results)
         if not context:
-            return "No relevant knowledge-base content was retrieved."
-
+            return (
+                "You are a knowledge-base assistant.",
+                "No relevant knowledge-base content was retrieved.",
+            )
         system_prompt = (
             "You are a knowledge-base assistant. Answer only from the provided context. "
             "If evidence is insufficient, say that the answer is unknown from current knowledge."
@@ -171,10 +227,27 @@ class KnowledgeBaseApi:
             f"Knowledge context:\n{context}\n\n"
             "Provide a concise and accurate answer."
         )
+        return system_prompt, user_prompt
+
+    def _answer_from_lm_studio(
+        self,
+        question: str,
+        results: Sequence[Dict[str, Any]],
+        llm_model: str | None = None,
+        temperature: float | None = 0.2,
+        max_tokens: int | None = None,
+        history_messages: Sequence[Dict[str, Any]] | None = None,
+    ) -> str:
+        model = self._resolve_llm_model(llm_model)
+        system_prompt, user_prompt = self._build_chat_prompts(question, results)
+        if user_prompt == "No relevant knowledge-base content was retrieved.":
+            return user_prompt
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
         ]
+        if history_messages:
+            messages.extend(list(history_messages))
+        messages.append({"role": "user", "content": user_prompt})
         answer = self.kb.chat_once(
             messages=messages,
             model=model,
@@ -182,6 +255,32 @@ class KnowledgeBaseApi:
             max_tokens=max_tokens,
         )
         return str(answer or "").strip()
+
+    def _answer_stream_from_lm_studio(
+        self,
+        question: str,
+        results: Sequence[Dict[str, Any]],
+        llm_model: str | None = None,
+        temperature: float | None = 0.2,
+        max_tokens: int | None = None,
+        history_messages: Sequence[Dict[str, Any]] | None = None,
+    ) -> Sequence[str]:
+        model = self._resolve_llm_model(llm_model)
+        system_prompt, user_prompt = self._build_chat_prompts(question, results)
+        if user_prompt == "No relevant knowledge-base content was retrieved.":
+            return [user_prompt]
+        messages = [
+            {"role": "system", "content": system_prompt},
+        ]
+        if history_messages:
+            messages.extend(list(history_messages))
+        messages.append({"role": "user", "content": user_prompt})
+        return self.kb.chat_stream(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
     @staticmethod
     def _distance_to_similarity(distance: float) -> float:
@@ -199,6 +298,8 @@ class KnowledgeBaseApi:
         generate_answer: bool = True,
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> Dict[str, Any]:
         logger.info("API query called: k=%s generate_answer=%s", k, generate_answer)
         req = {
@@ -211,6 +312,8 @@ class KnowledgeBaseApi:
             "generate_answer": bool(generate_answer),
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "user_id": user_id,
+            "session_id": session_id,
         }
         try:
             raw = self.kb.search(query=query, k=k, relevance_threshold=relevance_threshold)
@@ -230,6 +333,8 @@ class KnowledgeBaseApi:
             answer = ""
             finish_reason = "stop"
             is_complete = True
+            history_messages = self._load_chat_context(user_id, session_id)
+            system_prompt, user_prompt = self._build_chat_prompts(query, ranked_results)
             if generate_answer:
                 answer = self._answer_from_lm_studio(
                     question=query,
@@ -237,14 +342,24 @@ class KnowledgeBaseApi:
                     llm_model=llm_model,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    history_messages=history_messages,
                 )
             else:
                 finish_reason = "not_requested"
+            messages = [
+                {"role": "system", "content": system_prompt},
+                *history_messages,
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": answer},
+            ]
             resp: Dict[str, Any] = {
                 "answer": answer,
                 "finish_reason": finish_reason,
                 "is_complete": bool(is_complete),
                 "results": result_items,
+                "session_id": session_id,
+                "user_id": user_id,
+                "messages": messages,
             }
             self._append_history("query", req, resp)
             logger.info("API query completed: results=%s", len(result_items))
@@ -253,6 +368,68 @@ class KnowledgeBaseApi:
             self._append_history("query", req, {"ok": False}, error=str(exc))
             logger.exception("API query failed")
             raise
+
+    def query_stream(
+        self,
+        query: str,
+        k: int = 2,
+        relevance_threshold: float | None = None,
+        llm_model: str | None = None,
+        generate_answer: bool = True,
+        temperature: float | None = 0.2,
+        max_tokens: int | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> Dict[str, Any]:
+        req = {
+            "query": query,
+            "k": int(k),
+            "relevance_threshold": (
+                None if relevance_threshold is None else float(relevance_threshold)
+            ),
+            "llm_model": llm_model,
+            "generate_answer": bool(generate_answer),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "user_id": user_id,
+            "session_id": session_id,
+        }
+        raw = self.kb.search(query=query, k=k, relevance_threshold=relevance_threshold)
+        ranked_results = []
+        result_items = []
+        for fn, text, distance_raw in raw:
+            distance = max(0.0, float(distance_raw))
+            similarity = self._distance_to_similarity(distance)
+            ranked_results.append({"filename": fn, "text": text, "score": similarity})
+            result_items.append(
+                {
+                    "distance": round(float(distance), 4),
+                    "filename": str(fn),
+                    "similarity": round(float(similarity), 4),
+                }
+            )
+
+        stream = []
+        history_messages = self._load_chat_context(user_id, session_id)
+        system_prompt, user_prompt = self._build_chat_prompts(query, ranked_results)
+        if generate_answer:
+            stream = self._answer_stream_from_lm_studio(
+                question=query,
+                results=ranked_results,
+                llm_model=llm_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                history_messages=history_messages,
+            )
+        return {
+            "req": req,
+            "results": result_items,
+            "stream": stream,
+            "history_messages": history_messages,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+        }
 
     def add_document(self, filename: str, text: str) -> Dict[str, Any]:
         req = {"filename": filename, "text_length": len((text or "").strip())}
@@ -293,32 +470,90 @@ class KnowledgeBaseApi:
             self._append_history("add_uploaded_file", req, {"ok": False}, error=str(exc))
             raise
 
-    def add_files(self, file_paths: Sequence[str]) -> Dict[str, Any]:
-        req = {"file_paths": list(file_paths)}
-        try:
-            chunks = self.kb.add_files(file_paths)
-            resp = {"ok": True, "chunks_added": int(chunks)}
-            self._append_history("add_files", req, resp)
-            return resp
-        except Exception as exc:
-            self._append_history("add_files", req, {"ok": False}, error=str(exc))
-            raise
-
-    def ingest_dir(self, root_dir: str, extensions: Sequence[str] | None = None) -> Dict[str, Any]:
+    def add_uploaded_files(
+        self, files: Sequence[Dict[str, Any]], encoding: str | None = None
+    ) -> Dict[str, Any]:
         req = {
-            "root_dir": root_dir,
-            "extensions": list(extensions) if extensions is not None else None,
+            "file_count": len(files),
+            "total_bytes": sum(len(item.get("content") or b"") for item in files),
+            "encoding": encoding,
         }
         try:
-            if extensions is None:
-                chunks = self.kb.ingest_dir(root_dir)
-            else:
-                chunks = self.kb.ingest_dir(root_dir, extensions=extensions)
-            resp = {"ok": True, "chunks_added": int(chunks)}
-            self._append_history("ingest_dir", req, resp)
+            total_chunks = 0
+            for item in files:
+                filename = str(item.get("filename") or "").strip()
+                if not filename:
+                    continue
+                total_chunks += self.kb.add_uploaded_file(
+                    filename=filename,
+                    content=item.get("content") or b"",
+                    encoding=encoding,
+                )
+            resp = {"ok": True, "chunks_added": int(total_chunks)}
+            self._append_history("add_uploaded_files", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("ingest_dir", req, {"ok": False}, error=str(exc))
+            self._append_history("add_uploaded_files", req, {"ok": False}, error=str(exc))
+            raise
+
+    def list_chunks(
+        self,
+        page_index: int = 1,
+        page_size: int = 20,
+        filename: str | None = None,
+        query: str | None = None,
+    ) -> Dict[str, Any]:
+        req = {
+            "pageIndex": page_index,
+            "pageSize": page_size,
+            "filename": filename,
+            "query": query,
+        }
+        try:
+            result = self.kb.list_chunks(
+                page_index=page_index,
+                page_size=page_size,
+                filename=filename,
+                query=query,
+            )
+            resp = {"ok": True, "count": int(result.get("total", 0)), "chunks": result.get("items", [])}
+            self._append_history("list_chunks", req, resp)
+            return resp
+        except Exception as exc:
+            self._append_history("list_chunks", req, {"ok": False}, error=str(exc))
+            raise
+
+    def update_chunk(self, chunk_id: int, text: str) -> Dict[str, Any]:
+        req = {"chunk_id": int(chunk_id), "text_length": len((text or "").strip())}
+        try:
+            self.kb.update_chunk(chunk_id=chunk_id, text=text)
+            resp = {"ok": True}
+            self._append_history("update_chunk", req, resp)
+            return resp
+        except Exception as exc:
+            self._append_history("update_chunk", req, {"ok": False}, error=str(exc))
+            raise
+
+    def delete_chunk(self, chunk_id: int) -> Dict[str, Any]:
+        req = {"chunk_id": int(chunk_id)}
+        try:
+            self.kb.delete_chunk(chunk_id=chunk_id)
+            resp = {"ok": True}
+            self._append_history("delete_chunk", req, resp)
+            return resp
+        except Exception as exc:
+            self._append_history("delete_chunk", req, {"ok": False}, error=str(exc))
+            raise
+
+    def rebuild_chunks_for_filename(self, filename: str) -> Dict[str, Any]:
+        req = {"filename": filename}
+        try:
+            chunks = self.kb.rebuild_chunks_for_filename(filename)
+            resp = {"ok": True, "chunks_added": int(chunks)}
+            self._append_history("rebuild_chunks", req, resp)
+            return resp
+        except Exception as exc:
+            self._append_history("rebuild_chunks", req, {"ok": False}, error=str(exc))
             raise
 
     def remove_document(self, filename: str) -> Dict[str, Any]:
@@ -362,6 +597,9 @@ class KnowledgeBaseApi:
 
     def clear_history(self) -> int:
         return self._history_store.clear()
+
+    def delete_history(self, item_id: int) -> int:
+        return self._history_store.delete(item_id)
 
 
 class API(KnowledgeBaseApi):
@@ -444,6 +682,75 @@ class HttpApiServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _send_sse_headers(self) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+
+            def _send_sse(self, event: str, payload: Dict[str, Any]) -> None:
+                data = json.dumps(payload, ensure_ascii=False)
+                message = f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+                self.wfile.write(message)
+                self.wfile.flush()
+
+            @staticmethod
+            def _guess_content_type(file_path: Path) -> str:
+                suffix = file_path.suffix.lower()
+                if suffix == ".md":
+                    return "text/markdown; charset=utf-8"
+                if suffix == ".js":
+                    return "application/javascript; charset=utf-8"
+                if suffix == ".css":
+                    return "text/css; charset=utf-8"
+
+                guessed, _ = mimetypes.guess_type(str(file_path))
+                if not guessed:
+                    return "application/octet-stream"
+                if guessed.startswith("text/") or guessed in {
+                    "application/json",
+                    "application/javascript",
+                    "image/svg+xml",
+                }:
+                    return guessed + "; charset=utf-8"
+                return guessed
+
+            @staticmethod
+            def _resolve_static_file(base_dir: Path, relative_path: str) -> Path | None:
+                if not base_dir.exists():
+                    return None
+                base = base_dir.resolve()
+                rel = str(relative_path or "").replace("\\", "/").lstrip("/")
+                if not rel:
+                    return None
+                candidate = (base / rel).resolve()
+                try:
+                    candidate.relative_to(base)
+                except ValueError:
+                    return None
+                if not candidate.is_file():
+                    return None
+                return candidate
+
+            def _serve_static(self, base_dir: Path, relative_path: str) -> bool:
+                target = self._resolve_static_file(base_dir, relative_path)
+                if target is None:
+                    return False
+                try:
+                    body = target.read_bytes()
+                except Exception:
+                    return False
+                self._send_bytes(200, body, self._guess_content_type(target))
+                return True
+
             def _ok(self, payload: Any, page_index: int = 1) -> None:
                 self._send_json(200, payload, page_index=page_index)
 
@@ -524,6 +831,51 @@ class HttpApiServer:
                 uploaded["form"] = form
                 return uploaded
 
+            def _read_multipart_files(self, field_name: str = "files") -> Dict[str, Any]:
+                content_type = self.headers.get("Content-Type", "")
+                if "multipart/form-data" not in content_type.lower():
+                    raise ValueError("Content-Type must be multipart/form-data")
+
+                raw = self._read_body_bytes()
+                if not raw:
+                    raise ValueError("Request body is empty")
+
+                header = (
+                    f"Content-Type: {content_type}\r\n"
+                    "MIME-Version: 1.0\r\n\r\n"
+                ).encode("utf-8")
+                message = BytesParser(policy=default).parsebytes(header + raw)
+                if not message.is_multipart():
+                    raise ValueError("Invalid multipart body")
+
+                form: Dict[str, str] = {}
+                uploads: List[Dict[str, Any]] = []
+                for part in message.iter_parts():
+                    disposition = part.get("Content-Disposition", "")
+                    if "form-data" not in disposition:
+                        continue
+                    name = part.get_param("name", header="content-disposition")
+                    if not name:
+                        continue
+
+                    filename = part.get_filename()
+                    payload = part.get_payload(decode=True) or b""
+                    if filename is not None:
+                        if name == field_name:
+                            uploads.append({"filename": filename, "content": payload})
+                        continue
+
+                    charset = part.get_content_charset() or "utf-8"
+                    try:
+                        form[name] = payload.decode(charset).strip()
+                    except Exception:
+                        form[name] = payload.decode("utf-8", errors="replace").strip()
+
+                if not uploads:
+                    raise ValueError(f"{field_name} is required")
+
+                return {"files": uploads, "form": form}
+
             def _parse_query_params(self) -> Dict[str, List[str]]:
                 parsed = urlparse(self.path)
                 return parse_qs(parsed.query, keep_blank_values=True)
@@ -554,12 +906,50 @@ class HttpApiServer:
             def do_GET(self):  # noqa: N802
                 try:
                     path = self._path()
+                    if path in {"/", "/ui", "/ui/"}:
+                        if self._serve_static(WEB_DIR, "index.html"):
+                            return
+                        self._internal_error(FileNotFoundError("Frontend entry not found: web/index.html"))
+                        return
+                    if path.startswith("/ui/"):
+                        rel = path[len("/ui/") :]
+                        if self._serve_static(WEB_DIR, rel):
+                            return
+                        self._not_found()
+                        return
+                    if path in {"/api-docs", "/docs", "/docs/"}:
+                        if self._serve_static(DOCS_DIR, "API.html"):
+                            return
+                        self._internal_error(FileNotFoundError("API document not found: docs/API.html"))
+                        return
+                    if path.startswith("/docs/"):
+                        rel = path[len("/docs/") :]
+                        if self._serve_static(DOCS_DIR, rel):
+                            return
+                        self._not_found()
+                        return
                     if path == "/health":
                         self._ok({"ok": True, "message": "alive"})
                         return
                     if path == "/query":
                         params = self._parse_query_params()
                         page_index = self._page_index_from_params(params)
+                        stream_mode = False
+                        if "stream" in params and params["stream"]:
+                            stream_raw = params["stream"][-1].strip().lower()
+                            stream_mode = stream_raw in {"1", "true", "yes", "on"}
+                        user_id = None
+                        session_id = None
+                        if "user_id" in params and params["user_id"]:
+                            user_id = params["user_id"][-1].strip() or None
+                        if "userId" in params and params["userId"]:
+                            user_id = params["userId"][-1].strip() or user_id
+                        if "session_id" in params and params["session_id"]:
+                            session_id = params["session_id"][-1].strip() or None
+                        if "sessionId" in params and params["sessionId"]:
+                            session_id = params["sessionId"][-1].strip() or session_id
+                        if user_id and not session_id:
+                            session_id = uuid.uuid4().hex
                         query = ""
                         if "query" in params and params["query"]:
                             query = params["query"][-1].strip()
@@ -609,6 +999,56 @@ class HttpApiServer:
                                 self._bad_request("max_tokens must be int")
                                 return
 
+                        if stream_mode:
+                            self._send_sse_headers()
+                            data = api.query_stream(
+                                query=query,
+                                k=k,
+                                relevance_threshold=relevance_threshold,
+                                llm_model=llm_model,
+                                generate_answer=generate_answer,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                user_id=user_id,
+                                session_id=session_id,
+                            )
+                            answer_parts: List[str] = []
+                            self._send_sse(
+                                "meta",
+                                {
+                                    "results": data.get("results", []),
+                                    "session_id": session_id,
+                                    "user_id": user_id,
+                                },
+                            )
+                            finish_reason = "stop"
+                            if generate_answer:
+                                for piece in data.get("stream", []):
+                                    text = str(piece or "")
+                                    if not text:
+                                        continue
+                                    answer_parts.append(text)
+                                    self._send_sse("delta", {"delta": text})
+                            else:
+                                finish_reason = "not_requested"
+                            answer_text = "".join(answer_parts)
+                            resp = {
+                                "answer": answer_text,
+                                "finish_reason": finish_reason,
+                                "is_complete": True,
+                                "results": data.get("results", []),
+                                "session_id": session_id,
+                                "user_id": user_id,
+                                "messages": [
+                                    {"role": "system", "content": data.get("system_prompt", "")},
+                                    *data.get("history_messages", []),
+                                    {"role": "user", "content": data.get("user_prompt", query)},
+                                    {"role": "assistant", "content": answer_text},
+                                ],
+                            }
+                            api._append_history("query", data.get("req", {}), resp)
+                            self._send_sse("done", {"finish_reason": finish_reason})
+                            return
                         self._ok(
                             api.query(
                                 query=query,
@@ -618,6 +1058,8 @@ class HttpApiServer:
                                 generate_answer=generate_answer,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
+                                user_id=user_id,
+                                session_id=session_id,
                             ),
                             page_index=page_index,
                         )
@@ -627,6 +1069,32 @@ class HttpApiServer:
                         return
                     if path == "/kb/documents":
                         self._ok(api.list_documents())
+                        return
+                    if path == "/kb/chunks":
+                        params = self._parse_query_params()
+                        page_index = self._page_index_from_params(params)
+                        page_size = 20
+                        filename = None
+                        query = None
+                        if "pageSize" in params and params["pageSize"]:
+                            try:
+                                page_size = int(params["pageSize"][-1])
+                            except Exception:
+                                self._bad_request("pageSize must be int")
+                                return
+                        if "filename" in params and params["filename"]:
+                            filename = params["filename"][-1].strip() or None
+                        if "q" in params and params["q"]:
+                            query = params["q"][-1].strip() or None
+                        self._ok(
+                            api.list_chunks(
+                                page_index=page_index,
+                                page_size=page_size,
+                                filename=filename,
+                                query=query,
+                            ),
+                            page_index=page_index,
+                        )
                         return
                     if path == "/history":
                         params = self._parse_query_params()
@@ -684,6 +1152,25 @@ class HttpApiServer:
                             return
                         self._ok(api.add_document(filename=filename, text=str(text)), page_index=page_index)
                         return
+                    if path == "/kb/files":
+                        content_type = self.headers.get("Content-Type", "")
+                        if "multipart/form-data" not in content_type.lower():
+                            self._bad_request("Use multipart/form-data with field 'files'")
+                            return
+                        uploaded = self._read_multipart_files("files")
+                        form = uploaded.get("form", {})
+                        page_index = self._to_positive_int(form.get("pageIndex", 1), default=1)
+                        encoding = str(form.get("encoding", "")).strip() or None
+                        files = uploaded.get("files", [])
+                        for item in files:
+                            if not str(item.get("filename") or "").strip():
+                                self._bad_request("filename is required")
+                                return
+                        self._ok(
+                            api.add_uploaded_files(files=files, encoding=encoding),
+                            page_index=page_index,
+                        )
+                        return
                     body = self._read_json()
                     page_index = self._page_index_from_body(body)
                     if path == "/query":
@@ -691,6 +1178,10 @@ class HttpApiServer:
                         if not query:
                             self._bad_request("query is required")
                             return
+                        user_id = str(body.get("user_id") or body.get("userId") or "").strip() or None
+                        session_id = str(body.get("session_id") or body.get("sessionId") or "").strip() or None
+                        if user_id and not session_id:
+                            session_id = uuid.uuid4().hex
                         generate_answer_raw = body.get("generate_answer", True)
                         if isinstance(generate_answer_raw, bool):
                             generate_answer = generate_answer_raw
@@ -718,6 +1209,57 @@ class HttpApiServer:
                         max_tokens_raw = body.get("max_tokens")
                         temperature = None if temperature_raw is None else float(temperature_raw)
                         max_tokens = None if max_tokens_raw is None else int(max_tokens_raw)
+                        stream_mode = bool(body.get("stream", False))
+                        if stream_mode:
+                            self._send_sse_headers()
+                            data = api.query_stream(
+                                query=query,
+                                k=k,
+                                relevance_threshold=relevance_threshold,
+                                llm_model=llm_model,
+                                generate_answer=generate_answer,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                user_id=user_id,
+                                session_id=session_id,
+                            )
+                            answer_parts: List[str] = []
+                            self._send_sse(
+                                "meta",
+                                {
+                                    "results": data.get("results", []),
+                                    "session_id": session_id,
+                                    "user_id": user_id,
+                                },
+                            )
+                            finish_reason = "stop"
+                            if generate_answer:
+                                for piece in data.get("stream", []):
+                                    text = str(piece or "")
+                                    if not text:
+                                        continue
+                                    answer_parts.append(text)
+                                    self._send_sse("delta", {"delta": text})
+                            else:
+                                finish_reason = "not_requested"
+                            answer_text = "".join(answer_parts)
+                            resp = {
+                                "answer": answer_text,
+                                "finish_reason": finish_reason,
+                                "is_complete": True,
+                                "results": data.get("results", []),
+                                "session_id": session_id,
+                                "user_id": user_id,
+                                "messages": [
+                                    {"role": "system", "content": data.get("system_prompt", "")},
+                                    *data.get("history_messages", []),
+                                    {"role": "user", "content": data.get("user_prompt", query)},
+                                    {"role": "assistant", "content": answer_text},
+                                ],
+                            }
+                            api._append_history("query", data.get("req", {}), resp)
+                            self._send_sse("done", {"finish_reason": finish_reason})
+                            return
                         self._ok(
                             api.query(
                                 query=query,
@@ -727,6 +1269,8 @@ class HttpApiServer:
                                 generate_answer=generate_answer,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
+                                user_id=user_id,
+                                session_id=session_id,
                             ),
                             page_index=page_index,
                         )
@@ -739,24 +1283,39 @@ class HttpApiServer:
                             return
                         self._ok(api.add_document(filename=filename, text=text), page_index=page_index)
                         return
-                    if path == "/kb/files":
-                        file_paths = body.get("file_paths")
-                        if not isinstance(file_paths, list) or not file_paths:
-                            self._bad_request("file_paths must be a non-empty list")
+                    if path == "/kb/chunks/rebuild":
+                        filename = str(body.get("filename", "")).strip()
+                        if not filename:
+                            self._bad_request("filename is required")
                             return
-                        self._ok(api.add_files([str(x) for x in file_paths]), page_index=page_index)
+                        self._ok(api.rebuild_chunks_for_filename(filename), page_index=page_index)
                         return
-                    if path == "/kb/ingest_dir":
-                        root_dir = str(body.get("root_dir", "")).strip()
-                        if not root_dir:
-                            self._bad_request("root_dir is required")
+                    self._not_found()
+                except ValueError as exc:
+                    self._bad_request(str(exc))
+                except Exception as exc:
+                    self._internal_error(exc)
+
+            def do_PUT(self):  # noqa: N802
+                try:
+                    path = self._path()
+                    if path.startswith("/kb/chunk/"):
+                        chunk_id_raw = unquote(path[len("/kb/chunk/") :]).strip()
+                        if not chunk_id_raw:
+                            self._bad_request("chunk_id is required")
                             return
-                        extensions = body.get("extensions")
-                        if extensions is not None and not isinstance(extensions, list):
-                            self._bad_request("extensions must be a list")
+                        try:
+                            chunk_id = int(chunk_id_raw)
+                        except Exception:
+                            self._bad_request("chunk_id must be int")
                             return
-                        ext_list = [str(x) for x in extensions] if extensions is not None else None
-                        self._ok(api.ingest_dir(root_dir=root_dir, extensions=ext_list), page_index=page_index)
+                        body = self._read_json()
+                        page_index = self._page_index_from_body(body)
+                        text = str(body.get("text", ""))
+                        if not text.strip():
+                            self._bad_request("text is required")
+                            return
+                        self._ok(api.update_chunk(chunk_id=chunk_id, text=text), page_index=page_index)
                         return
                     self._not_found()
                 except ValueError as exc:
@@ -774,12 +1333,40 @@ class HttpApiServer:
                         removed = api.clear_history()
                         self._ok({"ok": True, "removed": removed})
                         return
+                    if path.startswith("/history/"):
+                        raw_id = unquote(path[len("/history/") :]).strip()
+                        if not raw_id:
+                            self._bad_request("history id is required")
+                            return
+                        try:
+                            item_id = int(raw_id)
+                        except Exception:
+                            self._bad_request("history id must be int")
+                            return
+                        removed = api.delete_history(item_id)
+                        if removed <= 0:
+                            self._not_found()
+                            return
+                        self._ok({"ok": True, "removed": removed})
+                        return
                     if path.startswith("/kb/document/"):
                         filename = unquote(path[len("/kb/document/") :]).strip()
                         if not filename:
                             self._bad_request("filename is required")
                             return
                         self._ok(api.remove_document(filename))
+                        return
+                    if path.startswith("/kb/chunk/"):
+                        chunk_id_raw = unquote(path[len("/kb/chunk/") :]).strip()
+                        if not chunk_id_raw:
+                            self._bad_request("chunk_id is required")
+                            return
+                        try:
+                            chunk_id = int(chunk_id_raw)
+                        except Exception:
+                            self._bad_request("chunk_id must be int")
+                            return
+                        self._ok(api.delete_chunk(chunk_id))
                         return
                     self._not_found()
                 except Exception as exc:

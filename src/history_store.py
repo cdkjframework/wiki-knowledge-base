@@ -11,6 +11,7 @@ _VALID_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 class InMemoryHistoryStore:
     def __init__(self):
         self._items: List[Dict[str, Any]] = []
+        self._next_id = 1
 
     def append(
         self,
@@ -21,10 +22,12 @@ class InMemoryHistoryStore:
         error: str | None = None,
     ) -> Dict[str, Any]:
         item: Dict[str, Any] = {
+            "id": int(self._next_id),
             "timestamp": timestamp,
             "action": action,
             "request": request,
         }
+        self._next_id += 1
         if response is not None:
             item["response"] = response
         if error:
@@ -44,6 +47,12 @@ class InMemoryHistoryStore:
         count = len(self._items)
         self._items.clear()
         return count
+
+    def delete(self, item_id: int) -> int:
+        target = int(item_id)
+        before = len(self._items)
+        self._items = [x for x in self._items if int(x.get("id", -1)) != target]
+        return 1 if len(self._items) != before else 0
 
 
 class DatabaseHistoryStore:
@@ -289,3 +298,6 @@ class DatabaseHistoryStore:
 
     def clear(self) -> int:
         return self._run_write(f"DELETE FROM {self.table}")
+
+    def delete(self, item_id: int) -> int:
+        return self._run_write(f"DELETE FROM {self.table} WHERE id = %s", (int(item_id),))

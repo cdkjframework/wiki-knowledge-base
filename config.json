@@ -3,7 +3,7 @@
   "db_password_cipher": "CIPHER_PLACEHOLDER",
   "search": {
     "default_k": 2,
-    "max_search_results": 2
+    "max_search_results": 3
   },
   "history": {
     "backend": "mysql",
@@ -52,7 +52,7 @@
       "base_url": "http://10.10.0.59:1234",
       "api_key": "sk-lm-DeMgb9du:f4MD7wrJO3xRsq9PI8Of",
       "chat_model": "gpt-oss-20b",
-      "timeout": 30
+      "timeout": 300
     },
     "chunking": {
       "size": 800,
@@ -64,5 +64,9 @@
       "embed_weight": 0.35,
       "rerank_weight": 0.65
     }
+  },
+  "chat_context": {
+    "enabled": true,
+    "max_turns": 6
   }
 }

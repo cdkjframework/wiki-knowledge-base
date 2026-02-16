@@ -51,15 +51,15 @@
       "use_lm_studio": false
     },
     "chat": {
-      "model_type": "gpt",
-      "model": "gpt-oss-20b",
+      "model_type": "qwen",
+      "model": "qwen/qwen3-vl-30b",
       "use_lm_studio": true,
       "local_files_only": true,
       "temperature": 0.2,
       "max_tokens": 131072
     },
     "lm_studio": {
-      "model_type": "gpt",
+      "model_type": "qwen",
       "base_url": "http://10.10.0.59:1234",
       "api_key": "sk-lm-DeMgb9du:f4MD7wrJO3xRsq9PI8Of",
       "chat_model": "qwen/qwen3-vl-30b",
@@ -79,5 +79,11 @@
   "chat_context": {
     "enabled": true,
     "max_turns": 6
+  },
+  "logging": {
+    "level": "INFO",
+    "keep_days": 7,
+    "enable_debug": false,
+    "console_level": "INFO"
   }
 }

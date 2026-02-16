@@ -1158,35 +1158,47 @@ class KnowledgeBase:
     def warmup_models(
         self, load_embedding: bool = True, load_reranker: bool = True
     ) -> Dict[str, Any]:
+        logger.debug("开始预热模型: load_embedding=%s, load_reranker=%s", load_embedding, load_reranker)
         status: Dict[str, Any] = {"embedding_loaded": False, "reranker_loaded": False}
 
         if load_embedding:
+            logger.debug("预热 Embedding 模型...")
             try:
                 if self.use_lm_studio_embeddings and self._lm_client is not None:
+                    logger.debug("使用 LM Studio Embedding: %s", self.embedding_model_name)
                     self._lm_client.embed_texts(["warmup"], model=self.embedding_model_name)
                 else:
+                    logger.debug("使用本地 Embedding 模型")
                     self._ensure_embed_model()
                 status["embedding_loaded"] = True
+                logger.debug("Embedding 模型预热成功")
             except Exception as exc:
                 status["embedding_error"] = str(exc)
                 logger.exception("Embedding warmup failed")
+                logger.debug("Embedding 预热失败: %s", exc)
 
         if load_reranker:
+            logger.debug("预热 Reranker 模型...")
             try:
                 if self.use_lm_studio_rerank and self._lm_client is not None:
+                    logger.debug("使用 LM Studio Reranker: %s", self.reranker_model_name)
                     self._lm_client.rerank_scores(
                         "warmup",
                         ["warmup"],
                         model=self.reranker_model_name,
                     )
                 else:
+                    logger.debug("使用本地 Reranker 模型")
                     self._ensure_reranker_model()
                 status["reranker_loaded"] = True
+                logger.debug("Reranker 模型预热成功")
             except Exception as exc:
                 status["reranker_error"] = str(exc)
                 logger.exception("Reranker warmup failed")
+                logger.debug("Reranker 预热失败: %s", exc)
 
         logger.info("Warmup result: %s", status)
+        logger.debug("模型预热完成")
         return status
 
     def _split_text(self, text: str) -> List[str]:
@@ -1409,41 +1421,61 @@ class KnowledgeBase:
             5. 更新向量索引
             6. 保存到磁盘
         """
+        logger.debug("开始添加文档: filename='%s', text_length=%d", filename, len(text) if text else 0)
+        
         filename_norm = self._normalize_filename(filename)
         if not filename_norm:
+            logger.error("文件名为空或无效")
             raise ValueError("filename is required")
+        logger.debug("规范化文件名: '%s' -> '%s'", filename, filename_norm)
+        
         text = (text or "").strip()
         if not text:
+            logger.debug("文本为空，跳过添加")
             return 0
 
         target_key = self._filename_key(filename_norm)
         keep_idx = [i for i, c in enumerate(self._chunks) if self._filename_key(c.filename) != target_key]
-        if len(keep_idx) != len(self._chunks):
+        removed_count = len(self._chunks) - len(keep_idx)
+        if removed_count > 0:
+            logger.debug("删除旧文档的 %d 个分块", removed_count)
             self._chunks = [self._chunks[i] for i in keep_idx]
             self._embeddings = self._embeddings[keep_idx]
 
+        logger.debug("开始文本分块...")
         parts = self._split_text(text)
         if not parts:
+            logger.debug("分块结果为空")
             self._rebuild_index()
             self._save()
             return 0
+        logger.debug("文本分块完成，得到 %d 个分块", len(parts))
 
+        logger.debug("开始生成向量嵌入...")
         vecs = self._embed_texts(parts)
         if vecs.shape[0] != len(parts):
+            logger.error("向量数量与分块数量不匹配: %d vs %d", vecs.shape[0], len(parts))
             raise RuntimeError("Embedding count mismatch while adding document")
+        logger.debug("向量生成完成，shape=%s", vecs.shape)
 
         new_chunks = [_Chunk(filename=filename_norm, text=part) for part in parts]
         if self._embeddings.size == 0:
+            logger.debug("这是第一个文档，初始化嵌入矩阵")
             self._embeddings = vecs
         else:
+            logger.debug("合并新向量到现有嵌入矩阵")
             self._embeddings = np.vstack([self._embeddings, vecs]).astype(
                 np.float32, copy=False
             )
         self._chunks.extend(new_chunks)
+        logger.debug("总分块数: %d, 总向量数: %d", len(self._chunks), self._embeddings.shape[0])
 
         self.dimension = int(self._embeddings.shape[1])
+        logger.debug("重建向量索引...")
         self._rebuild_index()
+        logger.debug("保存到磁盘...")
         self._save()
+        logger.info("文档添加完成: filename='%s', chunks=%d", filename_norm, len(new_chunks))
         return len(new_chunks)
 
     def add_text_file(self, file_path: str) -> int:
@@ -2137,32 +2169,44 @@ class KnowledgeBase:
             6. 阈值过滤：如果 distance > threshold 则过滤
             7. 结果日志：打印搜索统计信息
         """
+        logger.debug("开始搜索: query='%s', k=%s, relevance_threshold=%s", query[:50] if query and len(query) > 50 else query, k, relevance_threshold)
+        
         if not self._chunks:
+            logger.debug("知识库为空，返回空结果")
             return []
 
         query = (query or "").strip()
         if not query:
+            logger.debug("查询文本为空，返回空结果")
             return []
 
         if k is None:
             k = self.default_k
         k = min(max(1, int(k)), self.max_search_results, len(self._chunks))
+        logger.debug("实际搜索参数: k=%d, 总分片数=%d", k, len(self._chunks))
         if k <= 0:
             return []
 
+        logger.debug("编码查询文本...")
         q_vec = self._embed_texts([query])
         if q_vec.shape[0] == 0:
+            logger.debug("查询编码失败，返回空结果")
             return []
+        logger.debug("查询编码完成，向量维度: %s", q_vec.shape)
 
         top_n = min(
             max(int(k) * self.candidate_multiplier, self.min_candidates, int(k)),
             len(self._chunks),
         )
+        logger.debug("开始候选召回，召回数量: %d (k=%d, multiplier=%d)", top_n, k, self.candidate_multiplier)
         candidates = self._candidate_search(q_vec, top_n=top_n)
         if not candidates:
+            logger.debug("未找到候选结果")
             return []
+        logger.debug("召回 %d 个候选结果", len(candidates))
 
         if self.rerank_weight > 0:
+            logger.debug("开始重排序，rerank_weight=%.2f", self.rerank_weight)
             cand_texts = [self._chunks[idx].text for idx, _ in candidates]
             rerank_raw = self._rerank_scores(query, cand_texts)
             ranked: List[Tuple[int, float]] = []
@@ -2171,26 +2215,35 @@ class KnowledgeBase:
                 rr_sim = self._score_to_similarity(self._sigmoid(float(rr)))
                 final_sim = self.embed_weight * base_sim + self.rerank_weight * rr_sim
                 ranked.append((idx, self._score_to_similarity(final_sim)))
+            logger.debug("重排序完成，得到 %d 个结果", len(ranked))
         else:
+            logger.debug("跳过重排序（rerank_weight=0）")
             ranked = [(idx, self._score_to_similarity(score)) for idx, score in candidates]
 
         ranked.sort(key=lambda x: x[1], reverse=True)
+        logger.debug("结果排序完成")
 
         threshold = None if relevance_threshold is None else float(relevance_threshold)
         results: List[Tuple[str, str, float]] = []
         seen_filenames: set[str] = set()
+        
+        logger.debug("开始过滤和去重，阈值=%s", threshold)
         for idx, sim in ranked:
             distance = self._similarity_to_distance(sim)
             if threshold is not None and distance > threshold:
+                logger.debug("过滤结果 idx=%d (distance=%.4f > threshold=%.4f)", idx, distance, threshold)
                 continue
             chunk = self._chunks[idx]
             filename_key = self._filename_key(chunk.filename)
             if filename_key in seen_filenames:
+                logger.debug("去重结果 idx=%d (filename=%s 已存在)", idx, chunk.filename)
                 continue
             seen_filenames.add(filename_key)
             results.append((chunk.filename, chunk.text, float(distance)))
+            logger.debug("添加结果 #%d: filename=%s, distance=%.4f", len(results), chunk.filename, distance)
             if len(results) >= int(k):
                 break
+        
         logger.info(
             "Search completed: query_len=%s requested_k=%s returned=%s threshold=%s",
             len(query),
@@ -2198,6 +2251,7 @@ class KnowledgeBase:
             len(results),
             relevance_threshold,
         )
+        logger.debug("搜索完成，返回 %d 个结果", len(results))
         return results
 
 

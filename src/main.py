@@ -1,5 +1,4 @@
 import argparse
-from datetime import datetime
 import json
 import logging
 from pathlib import Path
@@ -8,9 +7,11 @@ from typing import Any, Dict
 try:
     from .api import HttpApiServer, KnowledgeBaseApi
     from .knowledge_base import KnowledgeBase
+    from .logger_config import setup_logging
 except ImportError:  # pragma: no cover
     from api import HttpApiServer, KnowledgeBaseApi
     from knowledge_base import KnowledgeBase
+    from logger_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -133,33 +134,9 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _setup_logging() -> Path:
-    project_root = Path(__file__).resolve().parent.parent
-    logs_dir = project_root / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / f"knowledge-base-{datetime.now().strftime('%Y%m%d')}.log"
-
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-
-    formatter = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
-    root.addHandler(stream_handler)
-    return log_file
-
-
 def _main() -> None:
-    log_file = _setup_logging()
-    logger.info("Log file: %s", log_file)
+    logs_dir = setup_logging()
+    logger.info("日志目录: %s", logs_dir)
     args = _parse_args()
     logger.info(
         "Startup args: host=%s port=%s preload_embedding=%s preload_reranker=%s",

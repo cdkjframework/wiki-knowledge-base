@@ -46,6 +46,10 @@ class KnowledgeBaseApi:
         self._chat_cfg = config.get("knowledge_base", {}).get("chat", {})
         if not isinstance(self._chat_cfg, dict):
             self._chat_cfg = {}
+        # 读取 LM Studio 配置中的 model_type
+        self._lm_studio_cfg = config.get("knowledge_base", {}).get("lm_studio", {})
+        if not isinstance(self._lm_studio_cfg, dict):
+            self._lm_studio_cfg = {}
 
     @staticmethod
     def _now_iso() -> str:
@@ -275,6 +279,70 @@ class KnowledgeBaseApi:
     def log_event(self, action: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
         return {"ok": True}
 
+    def _get_model_type(self) -> str:
+        """获取模型类型，优先从 lm_studio 配置读取，其次从 chat 配置读取"""
+        model_type = self._lm_studio_cfg.get("model_type") or self._chat_cfg.get("model_type") or "qwen"
+        return str(model_type).strip().lower()
+
+    def _apply_deep_thinking_strategy(
+        self, system_prompt: str, deep_think: bool = True
+    ) -> str:
+        """根据 model_type 应用不同的深度思考策略"""
+        if not deep_think:
+            return system_prompt
+        
+        model_type = self._get_model_type()
+        
+        if model_type == "gpt":
+            # GPT 模型：在系统提示词前添加推理级别
+            system_prompt = "Reasoning: high\n" + system_prompt
+            logger.info("应用 GPT 深度思考策略：添加 Reasoning: high")
+        
+        elif model_type == "qwen":
+            # Qwen 模型：在系统提示词中添加思考引导
+            # 由于使用 LM Studio，无法直接设置 enable_thinking 参数
+            # 通过在系统提示词中明确要求输出思考过程
+            qwen_think_prompt = (
+                "\n\n请在回答前进行深度思考：\n"
+                "1. 将你的思考过程用 <think>...</think> 标签包裹\n"
+                "2. 在思考后给出最终答案\n"
+                "3. 思考过程应包含：问题分析、知识检索、逻辑推理、结论验证\n"
+                "4. 在思考末尾用 <thinking_summary>...</thinking_summary> 标签给出简要的思考摘要"
+            )
+            system_prompt += qwen_think_prompt
+            logger.info("应用 Qwen 深度思考策略：添加 <think> 标签引导")
+        
+        elif model_type == "deepseek":
+            # DeepSeek 模型：添加明确的逐步推理要求
+            deepseek_think_prompt = (
+                "\n\n请进行深度逐步推理：\n"
+                "1. 仔细分析问题的核心要点\n"
+                "2. 列举所有相关的知识和信息\n"
+                "3. 逐步推导，展示每一步的思考过程\n"
+                "4. 验证推理的逻辑性和一致性\n"
+                "5. 在充分思考后给出最终答案\n"
+                "请在回答中明确标注【思考过程】和【最终答案】两个部分，"
+                "并在末尾用 <thinking_summary>...</thinking_summary> 标签给出思考摘要。"
+            )
+            system_prompt += deepseek_think_prompt
+            logger.info("应用 DeepSeek 深度思考策略：添加逐步推理引导")
+        
+        else:
+            # 默认策略（兼容旧版本）
+            default_think_prompt = (
+                "\n\n请进行深度思考和分析：\n"
+                "1. 仔细分析问题的多个方面\n"
+                "2. 考虑相关的背景信息和上下文\n"
+                "3. 提供全面和深层的解释\n"
+                "4. 如有必要，说明你的推理过程\n\n"
+                "请在答案末尾追加思考摘要，使用如下标签包裹：\n"
+                "<thinking_summary>...简要思考摘要...</thinking_summary>"
+            )
+            system_prompt += default_think_prompt
+            logger.info("应用默认深度思考策略")
+        
+        return system_prompt
+
     def _resolve_llm_model(self, explicit_model: str | None = None) -> str:
         model = (explicit_model or "").strip()
         if model:
@@ -358,18 +426,8 @@ class KnowledgeBaseApi:
         model = self._resolve_llm_model(llm_model)
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
         
-        # 添加深度思考提示
-        if deep_think:
-            system_prompt += (
-                "\n\n请进行深度思考和分析：\n"
-                "1. 仔细分析问题的多个方面\n"
-                "2. 考虑相关的背景信息和上下文\n"
-                "3. 提供全面和深层的解释\n"
-                "4. 如有必要，说明你的推理过程\n\n"
-                "请在答案末尾追加思考摘要，不要输出完整推理链，"
-                "使用如下标签包裹：\n"
-                "<thinking_summary>...简要思考摘要...</thinking_summary>"
-            )
+        # 根据 model_type 应用深度思考策略
+        system_prompt = self._apply_deep_thinking_strategy(system_prompt, deep_think)
         
         if user_prompt == "No relevant knowledge-base content was retrieved.":
             logger.warning("检索到的知识库内容为空")
@@ -437,18 +495,8 @@ class KnowledgeBaseApi:
         model = self._resolve_llm_model(llm_model)
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
         
-        # 添加深度思考提示
-        if deep_think:
-            system_prompt += (
-                "\n\n请进行深度思考和分析：\n"
-                "1. 仔细分析问题的多个方面\n"
-                "2. 考虑相关的背景信息和上下文\n"
-                "3. 提供全面和深层的解释\n"
-                "4. 如有必要，说明你的推理过程\n\n"
-                "请在答案末尾追加思考摘要，不要输出完整推理链，"
-                "使用如下标签包裹：\n"
-                "<thinking_summary>...简要思考摘要...</thinking_summary>"
-            )
+        # 根据 model_type 应用深度思考策略
+        system_prompt = self._apply_deep_thinking_strategy(system_prompt, deep_think)
         
         if user_prompt == "No relevant knowledge-base content was retrieved.":
             logger.warning("检索到的知识库内容为空")
@@ -518,7 +566,19 @@ class KnowledgeBaseApi:
     ) -> Dict[str, Any]:
         if max_tokens is None:
             max_tokens = self._default_chat_max_tokens()
+        
         logger.info("API query called: k=%s generate_answer=%s deep_think=%s", k, generate_answer, deep_think)
+        logger.debug("查询详细参数:")
+        logger.debug("  query: %s", query[:100] if len(query) > 100 else query)
+        logger.debug("  k: %d", k)
+        logger.debug("  relevance_threshold: %s", relevance_threshold)
+        logger.debug("  llm_model: %s", llm_model)
+        logger.debug("  temperature: %s", temperature)
+        logger.debug("  max_tokens: %s", max_tokens)
+        logger.debug("  user_id: %s", user_id)
+        logger.debug("  session_id: %s", session_id)
+        logger.debug("  deep_think: %s", deep_think)
+        
         req = {
             "query": query,
             "k": int(k),
@@ -534,10 +594,14 @@ class KnowledgeBaseApi:
             "deep_think": bool(deep_think),
         }
         try:
+            logger.debug("开始执行知识库检索...")
             raw = self.kb.search(query=query, k=k, relevance_threshold=relevance_threshold)
+            logger.debug("检索到 %d 个原始结果", len(raw))
+            
             ranked_results = []
             result_items = []
-            for fn, text, distance_raw in raw:
+            for idx, (fn, text, distance_raw) in enumerate(raw):
+                logger.debug("处理检索结果 #%d: filename=%s, distance=%.4f", idx, fn, distance_raw)
                 distance = max(0.0, float(distance_raw))
                 similarity = self._distance_to_similarity(distance)
                 ranked_results.append({"filename": fn, "text": text, "score": similarity})
@@ -551,9 +615,16 @@ class KnowledgeBaseApi:
             answer = ""
             finish_reason = "stop"
             is_complete = True
+            logger.debug("加载聊天上下文...")
             history_messages = self._load_chat_context(user_id, session_id)
+            logger.debug("加载了 %d 条历史消息", len(history_messages))
+            
+            logger.debug("构建聊天提示词...")
             system_prompt, user_prompt = self._build_chat_prompts(query, ranked_results)
+            logger.debug("系统提示词长度: %d, 用户提示词长度: %d", len(system_prompt), len(user_prompt))
+            
             if generate_answer:
+                logger.debug("开始生成答案，使用 %d 个检索结果", len(ranked_results))
                 answer, thinking_summary = self._answer_from_lm_studio(
                     question=query,
                     results=ranked_results,
@@ -563,7 +634,11 @@ class KnowledgeBaseApi:
                     history_messages=history_messages,
                     deep_think=deep_think,
                 )
+                logger.debug("答案生成完成，长度: %d", len(answer))
+                if thinking_summary:
+                    logger.debug("思考摘要长度: %d", len(thinking_summary))
             else:
+                logger.debug("跳过答案生成（generate_answer=False）")
                 finish_reason = "not_requested"
                 thinking_summary = None
             messages = [

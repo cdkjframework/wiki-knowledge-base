@@ -5,9 +5,9 @@
     "default_k": 2,
     "max_search_results": 3
   },
-  "history": {
+  "db": {
     "backend": "mysql",
-    "table": "kb_history",
+    "table": "kb_session_messages",
     "mysql": {
       "host": "10.10.0.33",
       "port": 3306,
@@ -23,6 +23,15 @@
       "password": "",
       "database": "knowledge_base",
       "connect_timeout": 5
+    }
+  },
+  "session": {
+    "backend": "redis",
+    "redis": {
+      "host": "10.10.0.58",
+      "port": 6379,
+      "database": 10,
+      "password": ""
     }
   },
   "knowledge_base": {
@@ -42,6 +51,7 @@
       "use_lm_studio": false
     },
     "chat": {
+      "model_type": "gpt",
       "model": "gpt-oss-20b",
       "use_lm_studio": true,
       "local_files_only": true,
@@ -49,9 +59,10 @@
       "max_tokens": 131072
     },
     "lm_studio": {
+      "model_type": "gpt",
       "base_url": "http://10.10.0.59:1234",
       "api_key": "sk-lm-DeMgb9du:f4MD7wrJO3xRsq9PI8Of",
-      "chat_model": "gpt-oss-20b",
+      "chat_model": "qwen/qwen3-vl-30b",
       "timeout": 300
     },
     "chunking": {

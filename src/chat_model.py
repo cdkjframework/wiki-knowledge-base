@@ -83,6 +83,32 @@ class ChatModel:
             return "".join(parts)
         return ""
 
+    @staticmethod
+    def _summarize_text(text: str, limit: int = 120) -> str:
+        if not text:
+            return ""
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "..."
+
+    def _summarize_messages(self, messages: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        count = len(messages)
+        last_role = ""
+        last_len = 0
+        last_preview = ""
+        if messages:
+            last = messages[-1]
+            last_role = str(last.get("role", "")).strip().lower()
+            content_text = self._msg_content_to_text(last.get("content", ""))
+            last_len = len(content_text)
+            last_preview = self._summarize_text(content_text)
+        return {
+            "count": count,
+            "last_role": last_role,
+            "last_len": last_len,
+            "last_preview": last_preview,
+        }
+
     def _messages_to_prompt(self, messages: Sequence[Dict[str, Any]]) -> str:
         lines: List[str] = []
         for msg in messages:
@@ -193,21 +219,36 @@ class ChatModel:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
+        summary = self._summarize_messages(messages)
+        logger.info(
+            "Chat input: model=%s temp=%s max_tokens=%s messages=%s last_role=%s last_len=%s last_preview=%s",
+            model,
+            temperature,
+            max_tokens,
+            summary["count"],
+            summary["last_role"],
+            summary["last_len"],
+            summary["last_preview"],
+        )
         if self.use_lm_studio and self._lm_client is not None:
             logger.info("Chat inference via LM Studio: model=%s", model)
-            return self._lm_client.chat_once(
+            result = self._lm_client.chat_once(
                 messages=messages,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            logger.info("Chat output: model=%s chars=%s", model, len(result))
+            return result
         logger.info("Chat inference via local model: model=%s", model)
-        return self._local_chat_once(
+        result = self._local_chat_once(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        logger.info("Chat output: model=%s chars=%s", model, len(result))
+        return result
 
     def chat_stream(
         self,
@@ -216,20 +257,42 @@ class ChatModel:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> Sequence[str]:
+        summary = self._summarize_messages(messages)
+        logger.info(
+            "Chat stream input: model=%s temp=%s max_tokens=%s messages=%s last_role=%s last_len=%s last_preview=%s",
+            model,
+            temperature,
+            max_tokens,
+            summary["count"],
+            summary["last_role"],
+            summary["last_len"],
+            summary["last_preview"],
+        )
         if self.use_lm_studio and self._lm_client is not None:
             logger.info("Chat stream via LM Studio: model=%s", model)
-            return self._lm_client.chat_stream(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            def _logged_stream() -> Sequence[str]:
+                total = 0
+                chunks = 0
+                for piece in self._lm_client.chat_stream(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                ):
+                    text = str(piece or "")
+                    if text:
+                        total += len(text)
+                        chunks += 1
+                    yield piece
+                logger.info("Chat stream output: model=%s chunks=%s chars=%s", model, chunks, total)
+
+            return _logged_stream()
         logger.info("Chat stream via local model: model=%s", model)
-        return [
-            self._local_chat_once(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-        ]
+        text = self._local_chat_once(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        logger.info("Chat stream output: model=%s chunks=1 chars=%s", model, len(text))
+        return [text]

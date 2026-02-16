@@ -108,13 +108,26 @@ class _NumpyIndexFlatIP:
 
 class KnowledgeBase:
     """
-    Local knowledge base with:
-    - Qwen3 Embedding for recall
-    - Qwen3 Reranker for rerank
-    - FAISS for vector search
-
-    Public search contract:
-    search(query, k=3, relevance_threshold=1.0) -> List[(filename, chunk_text, score)]
+    本地知识库系统，支持文档管理、向量搜索和聊天功能。
+    
+    功能特性：
+    - 使用 Qwen3 Embedding 模型进行文本向量化
+    - 使用 Qwen3 Reranker 模型进行结果重排序
+    - 使用 FAISS 进行高效向量搜索
+    - 支持 PDF、Word、TXT 等多种文件格式
+    - 支持分块管理和智能检索
+    - 可选的 LM Studio 本地大模型聊天集成
+    
+    搜索接口：
+        search(query: str, k: int = None, relevance_threshold: float = None) 
+        -> List[Tuple[filename, chunk_text, score]]
+    
+    示例用法：
+        >>> kb = KnowledgeBase()
+        >>> kb.add_document("sample.txt", "这是一份示例文档")
+        >>> results = kb.search("示例")
+        >>> for filename, text, score in results:
+        ...     print(f"{filename}: {score:.4f}")
     """
 
     def __init__(
@@ -128,6 +141,54 @@ class KnowledgeBase:
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
     ):
+        """
+        初始化知识库系统。
+        
+        参数说明：
+            dimension (int, 可选)
+                向量维度。如果为 None，将从配置文件或嵌入模型自动推断。
+                默认值：None（自动推断）
+                
+            persist_dir (str, 可选)
+                知识库持久化存储目录。存储向量、分片、索引和元数据。
+                默认值："./kb_store"
+                
+            embedding_model (str, 可选)
+                嵌入模型名称。支持 HuggingFace 模型标识符。
+                默认值："Qwen/Qwen3-Embedding-0.6B"
+                示例："sentence-transformers/all-MiniLM-L6-v2"
+                
+            reranker_model (str, 可选)
+                重排序模型名称。用于精排搜索结果。
+                默认值："Qwen/Qwen3-Reranker-0.6B"
+                
+            device (str, 可选)
+                推理设备选择。可为 "cuda"、"cpu" 或 "auto"。
+                当为 "auto" 时，如果 GPU 可用则使用 CUDA，否则使用 CPU。
+                默认值："auto"（自动选择）
+                
+            local_files_only (bool, 可选)
+                是否仅使用本地模型文件。为 True 时不会从网络下载模型。
+                默认值：True（仅本地）
+                
+            chunk_size (int, 可选)
+                文本分块大小（字符数）。文档会被分割成此大小的文本块。
+                默认值：800
+                范围：[100, ∞)
+                
+            chunk_overlap (int, 可选)
+                分块之间的重叠字符数。用于保证分块之间的上下文连贯性。
+                默认值：120
+                范围：[0, ∞)
+        
+        配置文件支持：
+            通过项目根目录的 config.json 文件配置所有参数，或通过环境变量：
+            - KB_EMBED_MODEL: 嵌入模型
+            - KB_RERANK_MODEL: 重排序模型
+            - KB_MODEL_CACHE_DIR: 模型缓存目录
+            - LM_STUDIO_BASE_URL: LM Studio 服务地址
+            - LM_STUDIO_API_KEY: LM Studio API 密钥
+        """
         config = self._load_project_config()
         kb_cfg = config.get("knowledge_base", {})
         storage_cfg = kb_cfg.get("storage", {}) if isinstance(kb_cfg.get("storage"), dict) else {}
@@ -578,6 +639,68 @@ class KnowledgeBase:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
+        """
+        与聊天模型进行单轮对话（阻塞式，等待完整响应）。
+        
+        需要事先配置聊天模型（通常为 LM Studio 或本地大模型服务）。
+        
+        参数说明：
+            messages (Sequence[Dict[str, Any]])
+                对话历史消息列表。每条消息遵循 OpenAI Chat Completions API 格式：
+                [
+                    {"role": "system", "content": "You are a helpful assistant..."},
+                    {"role": "user", "content": "What is Python?"},
+                    {"role": "assistant", "content": "Python is..."},
+                    {"role": "user", "content": "Tell me more"},
+                ]
+                
+            model (str, 可选)
+                覆盖默认配置的模型名称。如果为 None，使用 self.chat_model_name。
+                示例："gpt-3.5-turbo"、"mistral"、"llama2"
+                
+            temperature (float, 可选)
+                生成多样性控制参数。范围：[0.0, 2.0]
+                - 0.0：完全确定性，重复相同内容
+                - 1.0：默认平衡
+                - 2.0：最大多样性，可能包含错误
+                默认值：None（使用模型默认值或系统配置 0.2）
+                
+            max_tokens (int, 可选)
+                生成的最大 token 数。范围：[1, 模型最大值]
+                默认值：None（使用系统配置或模型默认值）
+                
+        返回值：
+            str
+                模型的完整响应文本。
+        
+        异常处理：
+            RuntimeError
+                - 未配置聊天模型
+                - 模型服务不可用或连接失败
+            ValueError
+                - messages 格式错误
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> messages = [
+            ...     {"role": "user", "content": "What is the capital of France?"}
+            ... ]
+            >>> response = kb.chat_once(messages)
+            >>> print(response)
+            
+        多轮对话示例：
+            >>> messages = [
+            ...     {"role": "user", "content": "Hello, what's 2+2?"},
+            ... ]
+            >>> response = kb.chat_once(messages)
+            >>> print(f"Assistant: {response}")
+            >>> 
+            >>> # 继续对话
+            >>> messages.append({"role": "assistant", "content": response})
+            >>> messages.append({"role": "user", "content": "What about 3+3?"})
+            >>> response2 = kb.chat_once(messages)
+            >>> print(f"Assistant: {response2}")
+        """
         chosen_model = str(model or self.chat_model_name or "").strip()
         if not chosen_model:
             raise RuntimeError("No chat model configured")
@@ -595,6 +718,63 @@ class KnowledgeBase:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> Sequence[str]:
+        """
+        与聊天模型进行流式对话（实时流传输响应）。
+        
+        返回一个可迭代的文本块序列，模型生成的内容实时流回而不是等待完整响应。
+        适合长文本生成或需要实时反馈的场景。
+        
+        参数说明：
+            messages (Sequence[Dict[str, Any]])
+                对话历史消息列表。格式同 chat_once()。参见上方说明。
+                
+            model (str, 可选)
+                覆盖默认配置的模型名称。默认为 None（使用 self.chat_model_name）。
+                
+            temperature (float, 可选)
+                生成多样性控制参数。范围：[0.0, 2.0]。默认为 None。
+                
+            max_tokens (int, 可选)
+                生成的最大 token 数。默认为 None。
+                
+        返回值：
+            Sequence[str]
+                可迭代的文本块序列。每次迭代返回模型生成的部分文本。
+                可用于逐步显示模型输出、长文本处理等。
+        
+        异常处理：
+            RuntimeError: 未配置聊天模型或连接失败
+            ValueError: messages 格式错误
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> messages = [
+            ...     {"role": "user", "content": "Write a short story about a robot"}
+            ... ]
+            >>> 
+            >>> # 实时显示响应
+            >>> for chunk in kb.chat_stream(messages):
+            ...     print(chunk, end="", flush=True)
+            >>> print()  # 换行
+            
+        Web 应用中的用法（假设使用 Flask）：
+            >>> from flask import Flask, Response
+            >>> app = Flask(__name__)
+            >>> kb = KnowledgeBase()
+            >>> 
+            >>> @app.route("/chat-stream", methods=["POST"])
+            >>> def chat_stream_endpoint():
+            ...     messages = request.json.get("messages", [])
+            ...     def generate():
+            ...         for chunk in kb.chat_stream(messages):
+            ...             yield f"data: {chunk}\\n\\n"
+            ...     return Response(generate(), mimetype="text/event-stream")
+            
+        性能特性：
+            - 降低首字节延迟：不需要等待完整生成
+            - 降低内存使用：流式处理不需缓存整个响应
+            - 更佳用户体验：实时反馈而非等待
+        """
         chosen_model = str(model or self.chat_model_name or "").strip()
         if not chosen_model:
             raise RuntimeError("No chat model configured")
@@ -612,11 +792,39 @@ class KnowledgeBase:
         denom = mask.sum(dim=1).clamp(min=1e-12)
         return summed / denom
 
+    @staticmethod
+    def _summarize_texts(texts: Sequence[str]) -> Dict[str, int]:
+        count = len(texts)
+        if count == 0:
+            return {"count": 0, "avg_len": 0, "max_len": 0}
+        lengths = [len(str(t or "")) for t in texts]
+        total = sum(lengths)
+        return {
+            "count": count,
+            "avg_len": int(total / max(1, count)),
+            "max_len": max(lengths),
+        }
+
     def _embed_texts(self, texts: Sequence[str], batch_size: int = 16) -> np.ndarray:
+        summary = self._summarize_texts(texts)
+        logger.info(
+            "Embedding input: model=%s count=%s avg_len=%s max_len=%s use_lm_studio=%s",
+            self.embedding_model_name,
+            summary["count"],
+            summary["avg_len"],
+            summary["max_len"],
+            self.use_lm_studio_embeddings,
+        )
         if self.use_lm_studio_embeddings and self._lm_client is not None:
             vecs = self._lm_client.embed_texts(texts, model=self.embedding_model_name)
             if vecs.shape[0] > 0 and self.dimension is None:
                 self.dimension = int(vecs.shape[1])
+            logger.info(
+                "Embedding output: model=%s vectors=%s dim=%s",
+                self.embedding_model_name,
+                vecs.shape[0],
+                int(vecs.shape[1]) if vecs.ndim > 1 else 0,
+            )
             return vecs
         self._ensure_embed_model()
         all_vecs = []
@@ -655,9 +863,25 @@ class KnowledgeBase:
         vectors = self._normalize_rows(vectors)
         if vectors.shape[0] > 0 and self.dimension is None:
             self.dimension = int(vectors.shape[1])
+        logger.info(
+            "Embedding output: model=%s vectors=%s dim=%s",
+            self.embedding_model_name,
+            vectors.shape[0],
+            int(vectors.shape[1]) if vectors.ndim > 1 else 0,
+        )
         return vectors
 
     def _rerank_scores(self, query: str, docs: Sequence[str], batch_size: int = 8) -> List[float]:
+        summary = self._summarize_texts(docs)
+        logger.info(
+            "Rerank input: model=%s docs=%s avg_doc_len=%s max_doc_len=%s query_len=%s use_lm_studio=%s",
+            self.reranker_model_name,
+            summary["count"],
+            summary["avg_len"],
+            summary["max_len"],
+            len(str(query or "")),
+            self.use_lm_studio_rerank,
+        )
         if (
             self.use_lm_studio_rerank
             and self._lm_client is not None
@@ -667,6 +891,13 @@ class KnowledgeBase:
                 query, docs, model=self.reranker_model_name
             )
             if scores is not None:
+                logger.info(
+                    "Rerank output: model=%s scores=%s min=%s max=%s",
+                    self.reranker_model_name,
+                    len(scores),
+                    min(scores) if scores else None,
+                    max(scores) if scores else None,
+                )
                 return scores
         self._ensure_reranker_model()
         scores: List[float] = []
@@ -723,6 +954,13 @@ class KnowledgeBase:
                 else:
                     batch_scores = batch_scores[: len(batch_docs)]
             scores.extend(batch_scores)
+        logger.info(
+            "Rerank output: model=%s scores=%s min=%s max=%s",
+            self.reranker_model_name,
+            len(scores),
+            min(scores) if scores else None,
+            max(scores) if scores else None,
+        )
         return scores
 
     def _rebuild_index(self) -> None:
@@ -741,6 +979,28 @@ class KnowledgeBase:
         self._index.add(self._embeddings.astype(np.float32, copy=False))
 
     def clear(self) -> None:
+        """
+        清空知识库中的所有文档和分片。
+        
+        此操作不可恢复。会删除：
+        - 所有分片记录
+        - 所有向量
+        - FAISS 索引
+        - 但保留文件系统中的元数据和缓存文件
+        
+        返回值：
+            None
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> kb.add_document("doc1.txt", "content1")
+            >>> kb.add_document("doc2.txt", "content2")
+            >>> print(f"Before clear: {len(kb.list_documents())} documents")
+            >>> kb.clear()
+            >>> print(f"After clear: {len(kb.list_documents())} documents")
+            # 输出：Before clear: 2 documents
+            # 输出：After clear: 0 documents
+        """
         if self.dimension is None:
             self.dimension = 1024
         self._chunks = []
@@ -749,6 +1009,33 @@ class KnowledgeBase:
         self._save()
 
     def remove_document(self, filename: str) -> int:
+        """
+        从知识库中删除指定文件的所有分片。
+        
+        会找出所有 filename 匹配的分片并删除，包括：
+        - 分片记录
+        - 对应的向量
+        - 从 FAISS 索引中移除
+        
+        参数说明：
+            filename (str)
+                要删除的文档文件名。删除是模糊匹配（包含）。
+                示例："document" 将匹配 "document.pdf"、"document_v2.pdf" 等
+                
+        返回值：
+            int
+                删除的分片数。返回 0 表示未找到该文档。
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> kb.add_document("manual.pdf", "第 1 章...\\n第 2 章...")
+            >>> chunks = kb.list_chunks()
+            >>> print(f"Before removal: {chunks['count']} chunks")
+            >>> removed = kb.remove_document("manual")
+            >>> print(f"Removed {removed} chunks")
+            >>> chunks = kb.list_chunks()
+            >>> print(f"After removal: {chunks['count']} chunks")
+        """
         filename_norm = self._normalize_filename(filename)
         if not filename_norm:
             return 0
@@ -773,6 +1060,38 @@ class KnowledgeBase:
         return removed
 
     def list_documents(self) -> List[Dict[str, Any]]:
+        """
+        列出知识库中的所有文档及其统计信息。
+        
+        返回每个文档的下列信息：
+        - 文件名
+        - 分片数: 该文档所有的文本分片数
+        - 字符数: 该文档所有分片的总字符数
+        
+        返回值：
+            List[Dict[str, Any]]
+            包含字典的列表：
+            [
+                {
+                    "filename": str,      # 文档文件名
+                    "chunk_count": int,   # 分片数
+                    "char_count": int,    # 总字符数
+                },
+                ...
+            ]
+            
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> docs = kb.list_documents()
+            >>> for doc in docs:
+            ...     print(f"{doc['filename']}: {doc['chunk_count']} chunks, {doc['char_count']} chars")
+            
+        输出示例：
+            [
+                {"filename": "document.pdf", "chunk_count": 12, "char_count": 5834},
+                {"filename": "guide.md", "chunk_count": 5, "char_count": 2341},
+            ]
+        """
         by_name: Dict[str, Dict[str, Any]] = {}
         for chunk in self._chunks:
             item = by_name.get(chunk.filename)
@@ -788,6 +1107,38 @@ class KnowledgeBase:
         return sorted(by_name.values(), key=lambda x: str(x["filename"]).lower())
 
     def stats(self) -> Dict[str, Any]:
+        """
+        获取知识库的统计信息和配置详情。
+        
+        返回值：
+            Dict[str, Any]
+            包含以下键值对的字典：
+            {
+                "persist_dir": str,           # 持久化存储目录路径
+                "model_cache_dir": str,       # 模型缓存目录路径
+                "document_count": int,        # 知识库中的文档数
+                "chunk_count": int,           # 知识库中的总分片数
+                "dimension": int,             # 向量维度
+                "index_total": int,           # FAISS 索引中的向量总数
+                "embedding_model": str,       # 嵌入模型名称
+                "reranker_model": str,        # 重排序模型名称
+                "chat_model": str,            # 聊天模型名称
+                "use_lm_studio_chat": bool,   # 是否使用 LM Studio 进行聊天
+            }
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> kb.add_document("test.txt", "sample content")
+            >>> stats = kb.stats()
+            >>> print(f"文档数: {stats['document_count']}")
+            >>> print(f"分片数: {stats['chunk_count']}")
+            >>> print(f"向量维度: {stats['dimension']}")
+            >>> print(f"模型: {stats['embedding_model']}")
+            
+        打印完整统计信息：
+            >>> import json
+            >>> print(json.dumps(stats, indent=2, ensure_ascii=False))
+        """
         dim = self.dimension
         if dim is None and self._embeddings.ndim == 2 and self._embeddings.shape[1] > 0:
             dim = int(self._embeddings.shape[1])
@@ -1020,6 +1371,44 @@ class KnowledgeBase:
         return self._read_binary_strings(path)
 
     def add_document(self, filename: str, text: str) -> int:
+        """
+        添加文本文档到知识库。
+        
+        系统会自动将文本分块、生成向量、建立索引并保存。
+        如果同名文档已存在，会先删除旧版本，再添加新版本。
+        
+        参数说明：
+            filename (str)
+                文档文件名。用于标识和分组相关的文本块。
+                相同 filename 的多个添加会互相替换，不会重复。
+                示例："document.txt"、"README.md"
+                
+            text (str)
+                文档内容文本。支持任意长度的文本。
+                自动处理空白字符、编码等问题。
+                
+        返回值：
+            int
+                本次添加成功分块的数量。
+                返回 0 表示文本为空或处理失败。
+        
+        异常处理：
+            ValueError
+                如果 filename 为空或无效会抛出异常。
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> chunks = kb.add_document("guide.md", "# Python 快速开始\\n...")
+            >>> print(f"Created {chunks} chunks")
+            
+        内部流程：
+            1. 规范化文件名
+            2. 检查并删除同名旧文档的所有分块
+            3. 将文本按 chunk_size 和 chunk_overlap 分块
+            4. 为每个分块生成向量（embedding）
+            5. 更新向量索引
+            6. 保存到磁盘
+        """
         filename_norm = self._normalize_filename(filename)
         if not filename_norm:
             raise ValueError("filename is required")
@@ -1058,6 +1447,38 @@ class KnowledgeBase:
         return len(new_chunks)
 
     def add_text_file(self, file_path: str) -> int:
+        """
+        从文件系统中读取文本文件并添加到知识库。
+        
+        支持的文件格式：PDF、Word、Markdown、纯文本等。
+        系统会自动识别文件格式并提取文本内容。
+        
+        参数说明：
+            file_path (str)
+                文件的本地路径。可为相对路径或绝对路径。
+                示例："./documents/manual.pdf"、"C:\\docs\\guide.docx"
+                
+        返回值：
+            int
+                成功分块的数量。返回 0 表示文件不存在或为空。
+        
+        异常处理：
+            FileNotFoundError: 文件不存在
+            ValueError: 文件不可读或格式不支持
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> chunks = kb.add_text_file("./local_file.pdf")
+            >>> print(f"Added {chunks} chunks from PDF")
+            
+        支持的文件类型：
+            - .txt: 纯文本文件
+            - .pdf: PDF 文档
+            - .docx: Microsoft Word 文档
+            - .md / .rst: Markdown/ReStructuredText
+            - .json / .csv: 数据文件
+            - .py / .yaml: 代码和配置文件
+        """
         path = Path(file_path)
         text = self._extract_text(path)
         return self.add_document(self._normalize_filename(path.name), text)
@@ -1079,6 +1500,49 @@ class KnowledgeBase:
     def add_uploaded_file(
         self, filename: str, content: bytes, encoding: str | None = None
     ) -> int:
+        """
+        添加上传的文件内容（二进制数据）到知识库。
+        
+        常用于处理 Web 应用中的文件上传。根据文件扩展名自动识别
+        文件格式并相应地处理（文本解码或二进制提取）。
+        
+        参数说明：
+            filename (str)
+                上传文件的原始文件名。用于确定文件类型和在知识库中的身份。
+                示例："report.pdf"、"document.docx"
+                
+            content (bytes)
+                文件的二进制内容。从上传请求直接获取的原始字节。
+                
+            encoding (str, 可选)
+                文本文件的字符编码。如果指定，优先使用该编码解码。
+                默认值：None（自动检测：utf-8-sig > utf-8 > gb18030 > ...）
+                示例："utf-8"、"gb2312"、"utf-16"
+                
+        返回值：
+            int
+                成功分块的数量。返回 0 表示文件为空或处理失败。
+        
+        异常处理：
+            ValueError
+                - filename 为空或无效
+                - 指定的 encoding 无法解码文件
+        
+        示例用法：
+            >>> from pathlib import Path
+            >>> with open("document.pdf", "rb") as f:
+            ...     content = f.read()
+            >>> kb = KnowledgeBase()
+            >>> chunks = kb.add_uploaded_file("document.pdf", content)
+            
+        文件处理流程：
+            1. 检查文件扩展名
+            2. 对于文本文件(.txt, .md, .json等)：直接用指定或自动检测的编码解码
+            3. 对于二进制文件(.pdf, .docx)：
+               - 尝试用二进制提取器提取文本
+               - 失败时降级为文本解码处理
+            4. 调用 add_document() 添加到知识库
+        """
         filename_clean = self._normalize_filename(filename)
         if not filename_clean:
             raise ValueError("filename is required")
@@ -1134,6 +1598,77 @@ class KnowledgeBase:
         filename: str | None = None,
         query: str | None = None,
     ) -> Dict[str, Any]:
+        """
+        列出知识库中的文本分片，支持分页、筛选和搜索。
+        
+        可按文件名筛选或按关键词搜索分片内容，返回分页结果。
+        
+        参数说明：
+            page_index (int, 可选)
+                页码（从 1 开始）。默认值：1
+                示例：page_index=2 获取第 2 页
+                
+            page_size (int, 可选)
+                每页数量。默认值：20
+                示例：page_size=50 每页显示 50 个分片
+                范围：[1, ∞)
+                
+            filename (str, 可选)
+                按源文档文件名筛选。None 表示不筛选，列出所有分片。
+                筛选是模糊匹配（包含）。
+                示例：filename="document" 将匹配 "document.pdf"、"document_v2.pdf" 等
+                默认值：None（不筛选）
+                
+            query (str, 可选)
+                按分片内容关键词搜索（不使用向量，普通文本搜索）。
+                搜索是不区分大小写的包含匹配。
+                示例：query="python" 将匹配包含 "python" 或 "Python" 的分片
+                默认值：None（不搜索）
+                
+        返回值：
+            Dict[str, Any]
+            包含以下键值对的字典：
+            {
+                "count": int,                    # 满足条件的总分片数
+                "page_index": int,               # 当前页码
+                "page_size": int,                # 每页数量
+                "total_pages": int,              # 总页数
+                "chunks": [                      # 当前页的分片列表
+                    {
+                        "id": str,               # 分片唯一标识
+                        "filename": str,         # 源文档文件名
+                        "text": str,             # 分片文本内容
+                    },
+                    ...
+                ]
+            }
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> # 获取第一页（20个分片）
+            >>> result = kb.list_chunks(page_index=1, page_size=20)
+            >>> print(f"Total chunks: {result['count']}")
+            
+            >>> # 列出某个文件的所有分片
+            >>> result = kb.list_chunks(filename="document", page_size=100)
+            
+            >>> # 搜索包含特定内容的分片
+            >>> result = kb.list_chunks(query="python", page_size=10)
+            
+            >>> # 组合：列出 document.pdf 中包含 "api" 的分片
+            >>> result = kb.list_chunks(
+            ...     filename="document",
+            ...     query="api",
+            ...     page_index=1,
+            ...     page_size=20
+            ... )
+        
+        搜索行为：
+            - page_index, page_size: 用于分页计算
+            - filename: 在所有分片中筛选出 filename 键包含该值的分片（包含匹配）
+            - query: 在已筛选的分片中继续按 text 内容搜索（包含匹配，不区分大小写）
+            - 两个筛选条件是 AND 关系
+        """
         page_index = max(1, int(page_index))
         page_size = max(1, int(page_size))
         filename_key = self._filename_key(filename) if filename else None
@@ -1160,6 +1695,35 @@ class KnowledgeBase:
         return {"total": total, "items": items[start:end]}
 
     def update_chunk(self, chunk_id: int, text: str) -> None:
+        """
+        更新指定 ID 的分片的文本内容。
+        
+        详细操作：
+        1. 根据 chunk_id 查找对应的分片
+        2. 更新其文本内容
+        3. 重新为新文本生成向量
+        4. 编不写向量索引
+        5. 保存所有改动到磁盘
+        
+        参数说明：
+            chunk_id (int)
+                要更新的分片的序号 ID。表示分片在整个知识库中的位置（造时 0 开始）。
+                示例：chunk_id=5 表示第 6 个分片
+                
+            text (str)
+                新的分片文本内容。将覆盖原分片的整个内容。
+                
+        异常处理：
+            IndexError: chunk_id 超出范围（分片不存在）
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> kb.add_document("test.txt", "original content")
+            >>> chunks = kb.list_chunks()
+            >>> chunk_id = 0
+            >>> kb.update_chunk(chunk_id, "updated content")
+            >>> # now kb.search("updated") will return this chunk
+        """
         idx = int(chunk_id)
         if idx < 0 or idx >= len(self._chunks):
             raise IndexError("chunk_id out of range")
@@ -1178,6 +1742,48 @@ class KnowledgeBase:
         self._save()
 
     def delete_chunk(self, chunk_id: int) -> None:
+        """
+        删除指定 ID 的分片。
+        
+        该方法会从知识库中永久移除一个文本分片，包括其对应的向量数据和索引。
+        此操作会自动更新 FAISS 索引和向量数组。
+        
+        详细操作流程：
+        1. 验证 chunk_id 范围（必须在 [0, chunk_count) 内）
+        2. 从分片列表中移除对应分片
+        3. 从向量矩阵中删除对应的行（删除其向量表示）
+        4. 重新构建 FAISS 索引（或 NumPy 备选索引）
+        5. 保存改动到磁盘
+        
+        参数说明：
+            chunk_id (int)
+                要删除的分片的 ID。是该分片在整个知识库中的位置索引（从 0 开始）。
+                示例：
+                - chunk_id=0 删除第 1 个分片
+                - chunk_id=5 删除第 6 个分片
+                
+        异常处理：
+            IndexError
+                当 chunk_id < 0 或 chunk_id >= 知识库中的总分片数时抛出
+                示例错误信息：\"chunk_id out of range\"
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> kb.add_document("test.txt", "content1\\ncontent2\\ncontent3")
+            >>> chunks = kb.list_chunks(page_size=100)
+            >>> print(f"删除前: {chunks['count']} 个分片")
+            >>> # 删除第 2 个分片 (ID=1)
+            >>> kb.delete_chunk(1)
+            >>> chunks = kb.list_chunks(page_size=100)
+            >>> print(f"删除后: {chunks['count']} 个分片")
+            删除前: 3 个分片
+            删除后: 2 个分片
+        
+        性能特性：
+            - 时间复杂度：O(n)，其中 n 为知识库中的分片数（需要重建索引）
+            - 空间复杂度：O(n)，需要在内存中处理所有向量
+            - 建议：删除大量分片时考虑使用 remove_document() 批量删除
+        """
         idx = int(chunk_id)
         if idx < 0 or idx >= len(self._chunks):
             raise IndexError("chunk_id out of range")
@@ -1191,6 +1797,42 @@ class KnowledgeBase:
         self._save()
 
     def rebuild_chunks_for_filename(self, filename: str) -> int:
+        """
+        重新构建指定文件的所有分片。
+        
+        需要先前参祖先明了该文件已经存在于知识库中。
+        此方法与直接称改 add_document() 等效，需要旧城了文档内容和旧的分片。
+        
+        详细操作：
+        1. 验证 filename 已存在于知识库中
+        2. 丢弃该文件的所有旧分片
+        3. 丢弃对应的旧向量
+        4. 重新下载文件内容或调用外部应用提供文本
+        5. 按新 chunk_size 和 chunk_overlap 分块
+        6. 生成新向量和索引
+        7. 保存
+        
+        参数说明：
+            filename (str)
+                要重构的文档文件名（必须具存于知识库）。
+                示例："document.pdf"
+                
+        返回值：
+            int
+                重构后新的分片数。返回 0 表示失败或文档不存在。
+        
+        异常处理：
+            ValueError: 指定文件不存在（不是一个已上载文档）
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> kb.add_document("article.md", "original markdown content...")
+            >>> # 一段时间后，修改了 chunk_size
+            >>> kb.chunk_size = 500  # 改为 500
+            >>> # 重新构建文档的分片
+            >>> new_chunks = kb.rebuild_chunks_for_filename("article.md")
+            >>> print(f"Rebuilt with {new_chunks} chunks (new chunk_size=500)")
+        """
         filename_norm = self._normalize_filename(filename)
         if not filename_norm:
             raise ValueError("filename is required")
@@ -1240,6 +1882,45 @@ class KnowledgeBase:
         return len(new_chunks)
 
     def add_files(self, file_paths: Sequence[str]) -> int:
+        """
+        批量添加多个本地文件到知识库。
+        
+        逐个调用 add_text_file() 处理每个文件。支持所有 add_text_file() 支持的文件格式。
+        
+        参数说明：
+            file_paths (Sequence[str])
+                文件路径列表。可为相对路径或绝对路径。
+                示例：["./docs/guide.pdf", "./docs/manual.pdf"]
+                     ["/home/user/doc.txt", "C:\\\\docs\\\\file.docx"]
+                
+        返回值：
+            int
+                所有文件添加的总分片数。如果某文件处理失败，会自动跳过并继续处理下一个。
+        
+        异常处理：
+            无异常抛出。如果某文件不存在或不可读，会自动跳过。
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> files = [
+            ...     "./documents/guide.pdf",
+            ...     "./documents/tutorial.md",
+            ...     "./documents/reference.txt"
+            ... ]
+            >>> total_chunks = kb.add_files(files)
+            >>> print(f"Added {total_chunks} chunks from {len(files)} files")
+            
+        处理流程：
+            1. 遍历 file_paths 列表
+            2. 对每个路径调用 add_text_file()
+            3. 累计返回所有成功添加的分片数
+            4. 任何单个文件的错误不会中断批处理
+            
+        性能提示：
+            - 大批量文件（100+）会耗时较长
+            - 处理期间知识库保持可用状态
+            - 考虑使用 ingest_dir() 处理目录
+        """
         total = 0
         for p in file_paths:
             total += self.add_text_file(p)
@@ -1266,6 +1947,88 @@ class KnowledgeBase:
             ".pws",
         ),
     ) -> int:
+        """
+        批量导入目录中的所有文件到知识库。
+        
+        该方法递归扫描指定目录及其所有子目录，找到所有匹配指定扩展名的文件，
+        并依次通过 add_text_file() 添加到知识库中。
+        
+        工作流程：
+            1. 验证目录存在性
+            2. 规范化允许的文件扩展名（转换为小写）
+            3. 递归遍历整个目录树
+            4. 过滤符合扩展名的文件
+            5. 逐文件处理，跳过损坏的文件，继续处理其他文件
+            6. 返回成功处理的总块数
+        
+        参数说明：
+            root_dir (str)
+                目录的绝对路径或相对路径
+                示例: "/data/documents" 或 "./knowledge_base/files"
+                
+            extensions (Sequence[str], 可选)
+                允许处理的文件扩展名集合（不区分大小写）
+                默认值包含常见格式: .pdf, .docx, .xlsx, .txt, .md 等
+                示例: (".pdf", ".docx", ".xlsx")
+                说明：
+                    - 扩展名必须以 "." 开头
+                    - 大小写不敏感（.PDF、.pdf、.Pdf 都会被匹配）
+                    - 空列表表示导入所有文件（不推荐）
+        
+        返回值：
+            int
+            成功处理的总块数（所有文件的块数之和）
+            说明：
+                - 即使某个文件处理失败，返回值仍然是其他文件的块数总和
+                - 返回 0 表示目录为空或没有找到匹配的文件
+                - 返回值等于所有已成功处理文件的块数总和
+        
+        异常处理：
+            FileNotFoundError
+                当指定的目录路径不存在时抛出
+                示例错误信息: "Directory not found: /nonexistent/path"
+            
+            其他异常（来自 add_text_file 调用）
+                单个文件的处理错误不会中断整个导入过程
+                该文件被跳过，继续处理后续文件
+                错误信息会由 add_text_file 级别处理
+        
+        示例用法：
+            >>> # 导入整个数据目录
+            >>> kb = KnowledgeBase()
+            >>> chunk_count = kb.ingest_dir("/data/documents")
+            >>> print(f"导入了 {chunk_count} 个知识块")
+            导入了 2345 个知识块
+            
+            >>> # 只导入特定类型的文件
+            >>> chunk_count = kb.ingest_dir(
+            ...     root_dir="/research/papers",
+            ...     extensions=(".pdf", ".txt")
+            ... )
+            >>> print(f"从论文目录导入了 {chunk_count} 个块")
+            从论文目录导入了 856 个块
+            
+            >>> # 导入包含多层子目录的项目
+            >>> chunk_count = kb.ingest_dir(
+            ...     root_dir="./project_docs",
+            ...     extensions=(".md", ".rst", ".txt")
+            ... )
+            >>> print(f"文档总块数: {chunk_count}")
+            文档总块数: 1234
+        
+        性能特性：
+            - 时间复杂度：O(n)，其中 n 为所有目录和文件总数
+            - 空间复杂度：O(m)，其中 m 为处理的文件数量
+            - 适用规模：可处理数千个文件的目录
+            - 建议：对于超过 10000 个文件的目录，考虑分批处理
+        
+        注意事项：
+            - 目录扫描是递归的，会遍历所有子目录
+            - 文件处理顺序与操作系统的遍历顺序有关（通常不保证特定顺序）
+            - 导入期间知识库保持可用，查询和聊天操作不受影响
+            - 大文件集处理时可能耗时较长（建议在后台任务中执行）
+            - 推荐结合错误日志系统，追踪具体哪些文件处理失败
+        """
         root = Path(root_dir)
         if not root.exists():
             raise FileNotFoundError(f"Directory not found: {root_dir}")
@@ -1312,6 +2075,68 @@ class KnowledgeBase:
     def search(
         self, query: str, k: int | None = None, relevance_threshold: float | None = None
     ) -> List[Tuple[str, str, float]]:
+        """
+        搜索知识库，返回最相关的文本分片。
+        
+        使用多阶段检索和重排序策略：
+        1. 第一阶段：使用嵌入模型编码查询，在 FAISS 索引中召回前 top_n 候选
+        2. 第二阶段：使用重排序模型对候选重排，计算混合相似度分数
+        3. 第三阶段：按相似度排序，过滤相关性阈值，去重，返回前 k 个结果
+        
+        参数说明：
+            query (str)
+                搜索查询文本。会被向量化进行语义相似性搜索。
+                示例："如何学习 Python"、"knowledge base API"
+                
+            k (int, 可选)
+                返回结果数量。默认值为 None（使用 self.default_k）。
+                实际返回数可能少于 k，取决于：
+                - 知识库中的总分片数
+                - 相关性阈值过滤结果
+                - 去重（同一文档只返回一个最相关分片）
+                范围：[1, self.max_search_results]
+                
+            relevance_threshold (float, 可选)
+                相关性阈值。值越小越严格。默认值：None（无阈值）。
+                基于距离度量。范围：[0, ∞)，建议 [0.5, 2.0] 范围内。
+                示例：threshold=1.0 只返回距离 ≤ 1.0 的结果
+                
+        返回值：
+            List[Tuple[str, str, float]]
+            返回列表，每个元素是 (filename, chunk_text, distance)：
+            [
+                ("document.pdf", "示例文本分片 1...", 0.523),
+                ("guide.md", "示例文本分片 2...", 0.687),
+                ...
+            ]
+            distance 为相关性距离，值越小表示越相关。
+            
+        异常处理：
+            无异常抛出。当知识库为空时返回空列表。
+        
+        示例用法：
+            >>> kb = KnowledgeBase()
+            >>> kb.add_document("tutorial.md", "Python 是一门强大的编程语言...")
+            >>> results = kb.search("Python 编程", k=3)
+            >>> for filename, text, distance in results:
+            ...     print(f"{filename}: {distance:.3f}")
+            ...     print(f"  {text[:50]}...")
+            
+        高级示例：
+            >>> # 严格相关性过滤
+            >>> results = kb.search("机器学习", k=5, relevance_threshold=0.8)
+            >>> # 查看搜索细节
+            >>> logger.setLevel(logging.DEBUG)  # 查看日志信息
+        
+        搜索流程详解：
+            1. 查询编码：text -> embedding vector
+            2. 候选召回：用 FAISS 找前 (k * candidate_multiplier) 个候选
+            3. 重排序：使用 Reranker 模型重新评分
+            4. 混合评分：embed_weight * embed_score + rerank_weight * rerank_score
+            5. 排序去重：按分数排序，去重取前 k 个
+            6. 阈值过滤：如果 distance > threshold 则过滤
+            7. 结果日志：打印搜索统计信息
+        """
         if not self._chunks:
             return []
 

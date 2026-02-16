@@ -239,6 +239,7 @@
         <h2>目录</h2>
         <a href="#common">通用响应结构</a>
         <a href="#health">1. 健康检查</a>
+        <a href="#session">1.1 会话</a>
         <a href="#query">2. 查询问答</a>
         <a href="#kb">3. 文档管理</a>
         <a href="#history">4. 历史记录</a>
@@ -287,6 +288,43 @@
       </div>
     </section>
 
+    <section id="session">
+      <h2>1.1 会话</h2>
+      <p class="note">默认使用 Redis 原子自增生成会话 ID，可确保同一用户在高并发/多实例下不重复；若 Redis 不可用，服务会回退到内存生成（进程内唯一）。</p>
+      <div class="endpoint">
+        <div class="endpoint-head">
+          <span class="method get">GET</span>
+          <span class="path">/session</span>
+        </div>
+        <div>参数（query string）：</div>
+        <ul>
+          <li><code>user_id</code> / <code>userId</code> (string, 必填)</li>
+        </ul>
+        <div>data 示例：</div>
+        <pre><code class="language-json">{
+  "ok": true,
+  "user_id": "user-001",
+  "session_id": "d8f4..."
+}</code></pre>
+      </div>
+      <div class="endpoint">
+        <div class="endpoint-head">
+          <span class="method post">POST</span>
+          <span class="path">/session</span>
+        </div>
+        <div>请求体（JSON）：</div>
+        <pre><code class="language-json">{
+  "user_id": "user-001"
+}</code></pre>
+        <div>data 示例：</div>
+        <pre><code class="language-json">{
+  "ok": true,
+  "user_id": "user-001",
+  "session_id": "d8f4..."
+}</code></pre>
+      </div>
+    </section>
+
     <section id="query">
       <h2>2. 查询问答</h2>
       <p>支持 <code>GET /query</code> 或 <code>POST /query</code>。</p>
@@ -304,10 +342,16 @@
           <li><code>relevance_threshold</code> (float, 可选)</li>
           <li><code>llm_model</code> (string, 可选)</li>
           <li><code>generate_answer</code> (bool, 默认 <code>true</code>)</li>
+          <li><code>deep_think</code> (bool, 默认 <code>true</code>)</li>
           <li><code>temperature</code> (float, 默认 <code>0.2</code>)</li>
-          <li><code>max_tokens</code> (int, 可选)</li>
+          <li><code>max_tokens</code> (int, 可选，默认取 <code>config.json</code> 中 <code>knowledge_base.chat.max_tokens</code>)</li>
+          <li><code>user_id</code> / <code>userId</code> (string, 可选)</li>
+          <li><code>session_id</code> / <code>sessionId</code> (string, 可选，未传且有 user_id 时自动生成)</li>
+          <li><code>stream</code> (bool, 可选，<code>true</code> 启用 SSE 流式返回)</li>
           <li><code>pageIndex</code> (int, 可选)</li>
         </ul>
+        <p class="note">当 <code>stream=true</code> 时，响应为 SSE（<code>text/event-stream</code>）。</p>
+        <p class="note">若传入 <code>user_id</code> 但未传 <code>session_id</code>，服务端会生成新的 <code>session_id</code> 并在响应里返回。</p>
       </div>
 
       <h3>2.2 POST /query</h3>
@@ -323,8 +367,12 @@
   "relevance_threshold": null,
   "llm_model": null,
   "generate_answer": true,
+  "deep_think": true,
   "temperature": 0.2,
   "max_tokens": 512,
+  "user_id": "user-001",
+  "session_id": "",
+  "stream": false,
   "pageIndex": 1
 }</code></pre>
         <div>data 示例：</div>
@@ -332,6 +380,14 @@
   "answer": "...",
   "finish_reason": "stop",
   "is_complete": true,
+  "session_id": "d8f4...",
+  "user_id": "user-001",
+  "thinking_summary": "...",
+  "messages": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."},
+    {"role": "assistant", "content": "..."}
+  ],
   "results": [
     {
       "distance": 0.1023,
@@ -340,6 +396,27 @@
     }
   ]
 }</code></pre>
+        <p class="note">启用 <code>stream=true</code> 时，响应为 SSE，事件包含：</p>
+        <ul>
+          <li><code>meta</code>：包含 <code>results</code>、<code>session_id</code>、<code>user_id</code></li>
+          <li><code>delta</code>：增量文本，字段 <code>delta</code></li>
+          <li><code>done</code>：完成事件，包含 <code>finish_reason</code>、<code>thinking_summary</code></li>
+        </ul>
+        <p class="note">当启用深度思考且模型提供摘要时，返回 <code>thinking_summary</code>；否则为空或不返回。</p>
+        <div>前端调用示例（SSE）：</div>
+        <pre><code class="language-javascript">fetch('/query?stream=1', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  },
+  body: JSON.stringify({
+    query: '如何重置密码？',
+    user_id: 'user-001',
+    session_id: '',
+    stream: true,
+  }),
+});</code></pre>
       </div>
     </section>
 
@@ -577,6 +654,19 @@
         <pre><code class="language-json">{
   "ok": true,
   "removed": 12
+}</code></pre>
+      </div>
+
+      <h3>4.3 删除单条历史</h3>
+      <div class="endpoint">
+        <div class="endpoint-head">
+          <span class="method delete">DELETE</span>
+          <span class="path">/history/{id}</span>
+        </div>
+        <div>data 示例：</div>
+        <pre><code class="language-json">{
+  "ok": true,
+  "removed": 1
 }</code></pre>
       </div>
     </section>

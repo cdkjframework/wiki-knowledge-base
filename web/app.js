@@ -9,6 +9,7 @@ const chunkState = {
   pageSize: 8,
   total: 0,
 };
+let documentsList = [];
 const chatUserInput = document.getElementById('chat-user-id');
 const chatSessionInput = document.getElementById('chat-session-id');
 const resetSessionBtn = document.getElementById('btn-reset-session');
@@ -67,26 +68,587 @@ async function apiRequest(path, options = {}) {
   return data;
 }
 
-function renderResults(results) {
-  const list = document.getElementById('chat-results');
-  list.innerHTML = '';
-  if (!Array.isArray(results) || results.length === 0) {
-    list.innerHTML = '<li class="result-item">无检索结果</li>';
+function addReferencesToMessage(results) {
+  if (!Array.isArray(results) || results.length === 0) return;
+  
+  const messagesContainer = document.getElementById('chat-messages');
+  const messages = messagesContainer.querySelectorAll('.chat-message.assistant');
+  if (messages.length === 0) return;
+  
+  const lastMessage = messages[messages.length - 1];
+  const content = lastMessage.querySelector('.message-content');
+  
+  // 移除旧的操作栏
+  const oldActions = content.querySelector('.message-actions');
+  if (oldActions) {
+    oldActions.remove();
+  }
+  
+  // 创建操作栏
+  const actionsBar = document.createElement('div');
+  actionsBar.className = 'message-actions';
+  
+  // 复制按钮
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'action-btn copy-btn';
+  copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  copyBtn.title = '复制回答';
+  copyBtn.addEventListener('click', () => {
+    const bubble = lastMessage.querySelector('.message-bubble');
+    const text = bubble.innerText || bubble.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+      setTimeout(() => {
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+      }, 1500);
+    }).catch(() => {});
+  });
+  
+  // 引用文档
+  const refBtn = document.createElement('button');
+  refBtn.className = 'action-btn ref-btn';
+  const refCount = results.length;
+  refBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><span class="ref-count">${refCount}</span>`;
+  
+  // 创建引用列表
+  const refList = document.createElement('div');
+  refList.className = 'ref-tooltip';
+  const refTitle = document.createElement('div');
+  refTitle.className = 'ref-tooltip-title';
+  refTitle.textContent = '引用文档';
+  refList.appendChild(refTitle);
+  
+  results.forEach((item, index) => {
+    const refItem = document.createElement('div');
+    refItem.className = 'ref-item';
+    const fileName = document.createElement('span');
+    fileName.className = 'ref-filename';
+    fileName.textContent = String(item.filename || 'unknown');
+    const similarity = document.createElement('span');
+    similarity.className = 'ref-similarity';
+    const simValue = item.similarity != null ? (item.similarity * 100).toFixed(1) + '%' : '-';
+    similarity.textContent = simValue;
+    refItem.appendChild(fileName);
+    refItem.appendChild(similarity);
+    refList.appendChild(refItem);
+  });
+  
+  const refContainer = document.createElement('div');
+  refContainer.className = 'ref-container';
+  refContainer.appendChild(refBtn);
+  refContainer.appendChild(refList);
+  
+  actionsBar.appendChild(copyBtn);
+  actionsBar.appendChild(refContainer);
+  
+  content.appendChild(actionsBar);
+}
+
+function addUserMessage(text) {
+  const messagesContainer = document.getElementById('chat-messages');
+  const welcome = messagesContainer.querySelector('.chat-welcome');
+  if (welcome) {
+    welcome.remove();
+  }
+
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'chat-message user';
+  
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar';
+  avatar.textContent = '我';
+  
+  const content = document.createElement('div');
+  content.className = 'message-content';
+  
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  bubble.textContent = text;
+  
+  const time = document.createElement('div');
+  time.className = 'message-time';
+  time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  
+  content.appendChild(bubble);
+  content.appendChild(time);
+  messageDiv.appendChild(avatar);
+  messageDiv.appendChild(content);
+  messagesContainer.appendChild(messageDiv);
+  
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function addAssistantMessage(text, isLoading = false) {
+  const messagesContainer = document.getElementById('chat-messages');
+  const welcome = messagesContainer.querySelector('.chat-welcome');
+  if (welcome) {
+    welcome.remove();
+  }
+
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'chat-message assistant';
+  messageDiv.dataset.messageId = Date.now();
+  
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar';
+  avatar.textContent = 'AI';
+  
+  const content = document.createElement('div');
+  content.className = 'message-content';
+  
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  if (isLoading) {
+    bubble.classList.add('loading');
+    bubble.innerHTML = '<span class="loading-dots">正在思考</span>';
+  } else {
+    bubble.innerHTML = renderMessageContent(text);
+  }
+  
+  const time = document.createElement('div');
+  time.className = 'message-time';
+  time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  
+  content.appendChild(bubble);
+  content.appendChild(time);
+  messageDiv.appendChild(avatar);
+  messageDiv.appendChild(content);
+  messagesContainer.appendChild(messageDiv);
+  
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  return messageDiv;
+}
+
+function updateLastAssistantMessage(text) {
+  const messagesContainer = document.getElementById('chat-messages');
+  const messages = messagesContainer.querySelectorAll('.chat-message.assistant');
+  if (messages.length === 0) return;
+  
+  const lastMessage = messages[messages.length - 1];
+  const bubble = lastMessage.querySelector('.message-bubble');
+  bubble.classList.remove('loading');
+  bubble.innerHTML = renderMessageContent(text);
+  
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function renderMessageContent(text) {
+  const raw = String(text || '');
+  if (window.marked) {
+    const html = window.marked.parse(raw, { breaks: true });
+    return window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
+  }
+  return renderMarkdownFallback(raw);
+}
+
+function appendThinkingSummary(container, summary) {
+  if (!container || !summary) return;
+  const existing = container.querySelector('.message-thinking');
+  if (existing) {
+    existing.remove();
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'message-thinking';
+  const title = document.createElement('div');
+  title.className = 'thinking-title';
+  title.textContent = '思考摘要';
+  const body = document.createElement('div');
+  body.className = 'thinking-body';
+  body.innerHTML = renderMessageContent(summary);
+  wrap.appendChild(title);
+  wrap.appendChild(body);
+  container.appendChild(wrap);
+}
+
+function addThinkingSummaryToLastAssistant(summary) {
+  if (!summary) return;
+  const messagesContainer = document.getElementById('chat-messages');
+  const messages = messagesContainer.querySelectorAll('.chat-message.assistant');
+  if (messages.length === 0) return;
+  const lastMessage = messages[messages.length - 1];
+  const content = lastMessage.querySelector('.message-content');
+  appendThinkingSummary(content, summary);
+}
+
+function loadSessionToChat(session) {
+  // 更新右侧的 Session ID 输入框
+  if (session.session_id) {
+    chatSessionInput.value = session.session_id;
+  }
+  if (session.user_id) {
+    chatUserInput.value = session.user_id;
+  }
+  
+  // 清空聊天区域
+  const messagesContainer = document.getElementById('chat-messages');
+  messagesContainer.innerHTML = '';
+  
+  const items = session.items || [];
+  if (items.length === 0) {
+    showToast('该会话没有记录', false);
     return;
   }
-  for (const item of results) {
-    const li = document.createElement('li');
-    li.className = 'result-item';
-    const title = document.createElement('div');
-    title.className = 'result-title';
-    title.textContent = String(item.filename || 'unknown');
-    const meta = document.createElement('div');
-    meta.textContent = `similarity=${item.similarity ?? '-'} | distance=${item.distance ?? '-'}`;
-    li.appendChild(title);
-    li.appendChild(meta);
-    list.appendChild(li);
+  
+  // 遍历session中的所有对话
+  for (const historyItem of items) {
+    const request = historyItem?.request || {};
+    const response = historyItem?.response || {};
+    const query = request.query || '新建聊天';
+    const answer = response.answer || historyItem?.error || '无回答';
+    const results = response.results || [];
+    const thinkingSummary = response.thinking_summary || '';
+    
+    // 添加用户问题
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-message user';
+    
+    const userAvatar = document.createElement('div');
+    userAvatar.className = 'message-avatar';
+    userAvatar.textContent = '我';
+    
+    const userContent = document.createElement('div');
+    userContent.className = 'message-content';
+    
+    const userBubble = document.createElement('div');
+    userBubble.className = 'message-bubble';
+    userBubble.textContent = query;
+    
+    const userTime = document.createElement('div');
+    userTime.className = 'message-time';
+    userTime.textContent = formatHistoryTime(historyItem?.timestamp);
+    
+    userContent.appendChild(userBubble);
+    userContent.appendChild(userTime);
+    userMsg.appendChild(userAvatar);
+    userMsg.appendChild(userContent);
+    messagesContainer.appendChild(userMsg);
+    
+    // 添加AI回答
+    const aiMsg = document.createElement('div');
+    aiMsg.className = 'chat-message assistant';
+    
+    const aiAvatar = document.createElement('div');
+    aiAvatar.className = 'message-avatar';
+    aiAvatar.textContent = 'AI';
+    
+    const aiContent = document.createElement('div');
+    aiContent.className = 'message-content';
+    
+    const aiBubble = document.createElement('div');
+    aiBubble.className = 'message-bubble';
+    aiBubble.innerHTML = renderMessageContent(answer);
+    
+    const aiTime = document.createElement('div');
+    aiTime.className = 'message-time';
+    aiTime.textContent = formatHistoryTime(historyItem?.timestamp);
+    
+    aiContent.appendChild(aiBubble);
+    aiContent.appendChild(aiTime);
+    
+    // 添加操作栏（复制按钮和引用文档）
+    if (results.length > 0) {
+      const actionsBar = createActionsBar(aiBubble, results);
+      aiContent.appendChild(actionsBar);
+    }
+
+    if (thinkingSummary) {
+      appendThinkingSummary(aiContent, thinkingSummary);
+    }
+    
+    aiMsg.appendChild(aiAvatar);
+    aiMsg.appendChild(aiContent);
+    messagesContainer.appendChild(aiMsg);
   }
+  
+  // 滚动到底部
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  
+  showToast(`已加载会话（${items.length}条对话）`);
 }
+
+function createActionsBar(aiBubble, results) {
+  const actionsBar = document.createElement('div');
+  actionsBar.className = 'message-actions';
+  
+  // 复制按钮
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'action-btn copy-btn';
+  copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  copyBtn.title = '复制回答';
+  copyBtn.addEventListener('click', () => {
+    const text = aiBubble.innerText || aiBubble.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+      setTimeout(() => {
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+      }, 1500);
+    }).catch(() => {});
+  });
+  
+  // 引用文档
+  const refBtn = document.createElement('button');
+  refBtn.className = 'action-btn ref-btn';
+  const refCount = results.length;
+  refBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><span class="ref-count">${refCount}</span>`;
+  
+  // 创建引用列表
+  const refList = document.createElement('div');
+  refList.className = 'ref-tooltip';
+  const refTitle = document.createElement('div');
+  refTitle.className = 'ref-tooltip-title';
+  refTitle.textContent = '引用文档';
+  refList.appendChild(refTitle);
+  
+  results.forEach((item) => {
+    const refItem = document.createElement('div');
+    refItem.className = 'ref-item';
+    const fileName = document.createElement('span');
+    fileName.className = 'ref-filename';
+    fileName.textContent = String(item.filename || 'unknown');
+    const similarity = document.createElement('span');
+    similarity.className = 'ref-similarity';
+    const simValue = item.similarity != null ? (item.similarity * 100).toFixed(1) + '%' : '-';
+    similarity.textContent = simValue;
+    refItem.appendChild(fileName);
+    refItem.appendChild(similarity);
+    refList.appendChild(refItem);
+  });
+  
+  const refContainer = document.createElement('div');
+  refContainer.className = 'ref-container';
+  refContainer.appendChild(refBtn);
+  refContainer.appendChild(refList);
+  
+  actionsBar.appendChild(copyBtn);
+  actionsBar.appendChild(refContainer);
+  
+  return actionsBar;
+}
+
+function loadSessionToChat(session) {
+  // 更新右侧的 Session ID 输入框
+  if (session.session_id) {
+    chatSessionInput.value = session.session_id;
+  }
+  if (session.user_id) {
+    chatUserInput.value = session.user_id;
+  }
+  
+  // 清空聊天区域
+  const messagesContainer = document.getElementById('chat-messages');
+  messagesContainer.innerHTML = '';
+  
+  const items = session.items || [];
+  if (items.length === 0) {
+    showToast('该会话没有记录', false);
+    return;
+  }
+  
+  // 遍历session中的所有对话
+  for (const historyItem of items) {
+    const request = historyItem?.request || {};
+    const response = historyItem?.response || {};
+    const query = request.query || '新建聊天';
+    const answer = response.answer || historyItem?.error || '无回答';
+    const results = response.results || [];
+    
+    // 添加用户问题
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-message user';
+    
+    const userAvatar = document.createElement('div');
+    userAvatar.className = 'message-avatar';
+    userAvatar.textContent = '我';
+    
+    const userContent = document.createElement('div');
+    userContent.className = 'message-content';
+    
+    const userBubble = document.createElement('div');
+    userBubble.className = 'message-bubble';
+    userBubble.textContent = query;
+    
+    const userTime = document.createElement('div');
+    userTime.className = 'message-time';
+    userTime.textContent = formatHistoryTime(historyItem?.timestamp);
+    
+    userContent.appendChild(userBubble);
+    userContent.appendChild(userTime);
+    userMsg.appendChild(userAvatar);
+    userMsg.appendChild(userContent);
+    messagesContainer.appendChild(userMsg);
+    
+    // 添加AI回答
+    const aiMsg = document.createElement('div');
+    aiMsg.className = 'chat-message assistant';
+    
+    const aiAvatar = document.createElement('div');
+    aiAvatar.className = 'message-avatar';
+    aiAvatar.textContent = 'AI';
+    
+    const aiContent = document.createElement('div');
+    aiContent.className = 'message-content';
+    
+    const aiBubble = document.createElement('div');
+    aiBubble.className = 'message-bubble';
+    aiBubble.innerHTML = renderMessageContent(answer);
+    
+    const aiTime = document.createElement('div');
+    aiTime.className = 'message-time';
+    aiTime.textContent = formatHistoryTime(historyItem?.timestamp);
+    
+    aiContent.appendChild(aiBubble);
+    aiContent.appendChild(aiTime);
+    
+    // 添加操作栏（复制按钮和引用文档）
+    if (results.length > 0) {
+      const actionsBar = createActionsBar(aiBubble, results);
+      aiContent.appendChild(actionsBar);
+    }
+    
+    aiMsg.appendChild(aiAvatar);
+    aiMsg.appendChild(aiContent);
+    messagesContainer.appendChild(aiMsg);
+  }
+  
+  // 滚动到底部
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  
+  showToast(`已加载会话（${items.length}条对话）`);
+}
+
+function loadHistoryToChat(historyItem) {
+  // 清空聊天区域
+  const messagesContainer = document.getElementById('chat-messages');
+  messagesContainer.innerHTML = '';
+  
+  // 获取请求和响应数据
+  const request = historyItem?.request || {};
+  const response = historyItem?.response || {};
+  const query = request.query || '新建聊天';
+  const answer = response.answer || historyItem?.error || '无回答';
+  const results = response.results || [];
+  const thinkingSummary = response.thinking_summary || '';
+  
+  // 添加用户问题
+  const userMsg = document.createElement('div');
+  userMsg.className = 'chat-message user';
+  
+  const userAvatar = document.createElement('div');
+  userAvatar.className = 'message-avatar';
+  userAvatar.textContent = '我';
+  
+  const userContent = document.createElement('div');
+  userContent.className = 'message-content';
+  
+  const userBubble = document.createElement('div');
+  userBubble.className = 'message-bubble';
+  userBubble.textContent = query;
+  
+  const userTime = document.createElement('div');
+  userTime.className = 'message-time';
+  userTime.textContent = formatHistoryTime(historyItem?.timestamp);
+  
+  userContent.appendChild(userBubble);
+  userContent.appendChild(userTime);
+  userMsg.appendChild(userAvatar);
+  userMsg.appendChild(userContent);
+  messagesContainer.appendChild(userMsg);
+  
+  // 添加AI回答
+  const aiMsg = document.createElement('div');
+  aiMsg.className = 'chat-message assistant';
+  
+  const aiAvatar = document.createElement('div');
+  aiAvatar.className = 'message-avatar';
+  aiAvatar.textContent = 'AI';
+  
+  const aiContent = document.createElement('div');
+  aiContent.className = 'message-content';
+  
+  const aiBubble = document.createElement('div');
+  aiBubble.className = 'message-bubble';
+  aiBubble.innerHTML = renderMessageContent(answer);
+  
+  const aiTime = document.createElement('div');
+  aiTime.className = 'message-time';
+  aiTime.textContent = formatHistoryTime(historyItem?.timestamp);
+  
+  aiContent.appendChild(aiBubble);
+  aiContent.appendChild(aiTime);
+  
+  // 添加操作栏（复制按钮和引用文档）
+  if (results.length > 0) {
+    const actionsBar = document.createElement('div');
+    actionsBar.className = 'message-actions';
+    
+    // 复制按钮
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'action-btn copy-btn';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+    copyBtn.title = '复制回答';
+    copyBtn.addEventListener('click', () => {
+      const text = aiBubble.innerText || aiBubble.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        setTimeout(() => {
+          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+        }, 1500);
+      }).catch(() => {});
+    });
+    
+    // 引用文档
+    const refBtn = document.createElement('button');
+    refBtn.className = 'action-btn ref-btn';
+    const refCount = results.length;
+    refBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><span class="ref-count">${refCount}</span>`;
+    
+    // 创建引用列表
+    const refList = document.createElement('div');
+    refList.className = 'ref-tooltip';
+    const refTitle = document.createElement('div');
+    refTitle.className = 'ref-tooltip-title';
+    refTitle.textContent = '引用文档';
+    refList.appendChild(refTitle);
+    
+    results.forEach((item) => {
+      const refItem = document.createElement('div');
+      refItem.className = 'ref-item';
+      const fileName = document.createElement('span');
+      fileName.className = 'ref-filename';
+      fileName.textContent = String(item.filename || 'unknown');
+      const similarity = document.createElement('span');
+      similarity.className = 'ref-similarity';
+      const simValue = item.similarity != null ? (item.similarity * 100).toFixed(1) + '%' : '-';
+      similarity.textContent = simValue;
+      refItem.appendChild(fileName);
+      refItem.appendChild(similarity);
+      refList.appendChild(refItem);
+    });
+    
+    const refContainer = document.createElement('div');
+    refContainer.className = 'ref-container';
+    refContainer.appendChild(refBtn);
+    refContainer.appendChild(refList);
+    
+    actionsBar.appendChild(copyBtn);
+    actionsBar.appendChild(refContainer);
+    aiContent.appendChild(actionsBar);
+  }
+
+  if (thinkingSummary) {
+    appendThinkingSummary(aiContent, thinkingSummary);
+  }
+  
+  aiMsg.appendChild(aiAvatar);
+  aiMsg.appendChild(aiContent);
+  messagesContainer.appendChild(aiMsg);
+  
+  // 滚动到底部
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  
+  showToast('已加载历史对话');
+}
+
 
 function formatHistoryTime(raw) {
   if (!raw) return '未知时间';
@@ -109,31 +671,53 @@ function renderHistory(history) {
     list.innerHTML = '<li class="history-item history-empty">暂无历史</li>';
     return;
   }
-  for (const item of history) {
+  for (const session of history) {
     const li = document.createElement('li');
     li.className = 'history-item';
+    
+    // 添加点击事件，显示整个session的对话
+    li.addEventListener('click', (e) => {
+      // 如果点击的是删除按钮，不触发查看功能
+      if (e.target.classList.contains('history-delete')) {
+        return;
+      }
+      loadSessionToChat(session);
+    });
+    
     const head = document.createElement('div');
     head.className = 'history-row';
     const title = document.createElement('div');
     title.className = 'history-title';
-    title.textContent = pickHistoryTitle(item);
+    // 显示第一个问题作为标题
+    const firstQuery = session.first_query || pickHistoryTitle(session.items?.[0] || {});
+    const displayTitle = String(firstQuery).slice(0, 40);
+    title.textContent = displayTitle + (session.count > 1 ? ` (共${session.count}条)` : '');
     head.appendChild(title);
 
-    if (item?.id != null) {
+    // 删除按钮 - 删除整个session的所有记录
+    if (session.session_id) {
       const delBtn = document.createElement('button');
       delBtn.className = 'history-delete';
       delBtn.type = 'button';
       delBtn.textContent = '删除';
-      delBtn.addEventListener('click', () => {
-        const ok = window.confirm('确定删除该记录吗？');
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation(); // 阻止事件冒泡
+        const ok = window.confirm(`确定删除该会话的所有${session.count}条记录吗？`);
         if (!ok) return;
-        deleteHistory(item.id).catch((err) => showToast(err.message, false));
+        try {
+          // 使用新的 DELETE /session/{session_id} API
+          await apiRequest(`/session/${encodeURIComponent(session.session_id)}`, { method: 'DELETE' });
+          showToast('会话记录已删除');
+          await refreshHistory();
+        } catch (err) {
+          showToast(err.message || '删除失败', false);
+        }
       });
       head.appendChild(delBtn);
     }
     const meta = document.createElement('div');
     meta.className = 'history-meta';
-    meta.textContent = `${formatHistoryTime(item?.timestamp)} · ${item?.action || 'unknown'}`;
+    meta.textContent = `${formatHistoryTime(session?.timestamp)} · ${session?.user_id || 'unknown'}`;
     li.appendChild(head);
     li.appendChild(meta);
     list.appendChild(li);
@@ -157,16 +741,30 @@ async function runChat(event) {
   const k = Number(document.getElementById('chat-k').value || 2);
   const thresholdRaw = document.getElementById('chat-threshold').value.trim();
   const generateAnswer = document.getElementById('chat-generate').checked;
-  const answerBox = document.getElementById('chat-answer');
-  renderAnswer(answerBox, '请求中...');
+  const deepThink = document.getElementById('chat-deep-think').checked;
+  
+  // 添加用户消息到聊天框
+  addUserMessage(query);
+  
+  // 立即显示AI等待消息
+  addAssistantMessage('', true);
+  
+  // 清空输入框并重置高度
+  const queryInput = document.getElementById('chat-query');
+  queryInput.value = '';
+  queryInput.style.height = 'auto';
 
   const body = {
     query,
     k: Number.isFinite(k) && k > 0 ? Math.floor(k) : 2,
     generate_answer: generateAnswer,
+    deep_think: deepThink,
     user_id: userId,
   };
-  const sessionId = chatSessionInput.value.trim();
+  let sessionId = chatSessionInput.value.trim();
+  if (!sessionId) {
+    sessionId = await ensureSessionId(userId);
+  }
   if (sessionId) {
     body.session_id = sessionId;
   }
@@ -174,31 +772,19 @@ async function runChat(event) {
     const threshold = Number(thresholdRaw);
     if (!Number.isFinite(threshold)) {
       showToast('相关性阈值必须是数字', false);
-      renderAnswer(answerBox, '等待提问...');
       return;
     }
     body.relevance_threshold = threshold;
   }
 
   try {
-    await runChatStream(body, answerBox);
+    await runChatStream(body);
     refreshHistory().catch(() => {});
     showToast('查询完成');
   } catch (error) {
-    renderAnswer(answerBox, '查询失败');
-    renderResults([]);
+    addAssistantMessage('抱歉，查询失败。请稍后重试。');
     showToast(error.message || '请求失败', false);
   }
-}
-
-function renderAnswer(container, text) {
-  const raw = String(text || '');
-  if (window.marked) {
-    const html = window.marked.parse(raw, { breaks: true });
-    container.innerHTML = window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
-    return;
-  }
-  container.innerHTML = renderMarkdownFallback(raw);
 }
 
 function renderMarkdownFallback(input) {
@@ -326,8 +912,8 @@ function renderMarkdownFallback(input) {
 }
 
 async function refreshHistory() {
-  const data = await apiRequest('/history?limit=20&action=query');
-  renderHistory(data.history || []);
+  const data = await apiRequest('/history?limit=20&action=query&group_by_session=true');
+  renderHistory(data.sessions || []);
 }
 
 async function deleteHistory(id) {
@@ -336,7 +922,7 @@ async function deleteHistory(id) {
   await refreshHistory();
 }
 
-async function runChatStream(body, answerBox) {
+async function runChatStream(body) {
   const resp = await fetch('/query?stream=1', {
     method: 'POST',
     headers: {
@@ -351,7 +937,6 @@ async function runChatStream(body, answerBox) {
     throw new Error(text || `Request failed (${resp.status})`);
   }
 
-  renderAnswer(answerBox, '');
   let answer = '';
   const reader = resp.body.getReader();
   const decoder = new TextDecoder('utf-8');
@@ -366,7 +951,7 @@ async function runChatStream(body, answerBox) {
       return;
     }
     if (eventType === 'meta') {
-      renderResults(payload.results || []);
+      addReferencesToMessage(payload.results || []);
       if (payload.session_id) {
         chatSessionInput.value = String(payload.session_id);
       }
@@ -375,9 +960,16 @@ async function runChatStream(body, answerBox) {
     if (eventType === 'delta') {
       const delta = String(payload.delta || '');
       if (!delta) return;
+      
       answer += delta;
-      renderAnswer(answerBox, answer);
+      updateLastAssistantMessage(answer);
       return;
+    }
+    if (eventType === 'done') {
+      const summary = String(payload.thinking_summary || '').trim();
+      if (summary) {
+        addThinkingSummaryToLastAssistant(summary);
+      }
     }
   };
 
@@ -408,18 +1000,57 @@ async function runChatStream(body, answerBox) {
   }
 }
 
+async function ensureSessionId(userId) {
+  const data = await apiRequest(`/session?user_id=${encodeURIComponent(userId)}`);
+  const sessionId = String(data.session_id || '');
+  if (sessionId) {
+    chatSessionInput.value = sessionId;
+  }
+  return sessionId;
+}
+
 function renderDocsTable(documents) {
   const tbody = document.getElementById('docs-tbody');
   tbody.innerHTML = '';
   if (!Array.isArray(documents) || documents.length === 0) {
     tbody.innerHTML = '<tr><td colspan="3">暂无文档</td></tr>';
-    return;
+    documentsList = [];
+  } else {
+    for (const doc of documents) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${String(doc.filename || '')}</td><td>${Number(doc.chunk_count || 0)}</td><td>${Number(doc.char_count || 0)}</td>`;
+      tbody.appendChild(tr);
+    }
+    documentsList = documents;
   }
+  
+  // 更新分片筛选下拉列表
+  updateChunkFilenameSelect();
+}
 
-  for (const doc of documents) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${String(doc.filename || '')}</td><td>${Number(doc.chunk_count || 0)}</td><td>${Number(doc.char_count || 0)}</td>`;
-    tbody.appendChild(tr);
+function updateChunkFilenameSelect() {
+  const select = document.getElementById('chunk-filename');
+  const currentValue = select.value;
+  
+  // 保留"全部文档"选项
+  select.innerHTML = '<option value="">-- 全部文档 --</option>';
+  
+  // 添加文档选项
+  if (Array.isArray(documentsList) && documentsList.length > 0) {
+    for (const doc of documentsList) {
+      const option = document.createElement('option');
+      option.value = String(doc.filename || '');
+      option.textContent = String(doc.filename || '');
+      select.appendChild(option);
+    }
+    
+    // 如果之前没有选择或者选择的文件不存在了，默认选择第一个文档
+    if (!currentValue || !documentsList.some(d => d.filename === currentValue)) {
+      select.value = String(documentsList[0].filename || '');
+      // 触发自动应用筛选
+      chunkState.pageIndex = 1;
+      refreshChunks().catch((err) => showToast(err.message, false));
+    }
   }
 }
 
@@ -690,6 +1321,10 @@ function bindEvents() {
   document.getElementById('btn-refresh-chunks').addEventListener('click', () => {
     refreshChunks().catch((err) => showToast(err.message, false));
   });
+  document.getElementById('chunk-filename').addEventListener('change', () => {
+    chunkState.pageIndex = 1;
+    refreshChunks().catch((err) => showToast(err.message, false));
+  });
   document.getElementById('btn-apply-chunk-filter').addEventListener('click', () => {
     chunkState.pageIndex = 1;
     refreshChunks().catch((err) => showToast(err.message, false));
@@ -712,8 +1347,20 @@ function bindEvents() {
   });
 
   resetSessionBtn.addEventListener('click', () => {
-    chatSessionInput.value = '';
-    showToast('已创建新会话');
+    const userId = chatUserInput.value.trim();
+    if (!userId) {
+      chatSessionInput.value = '';
+      showToast('用户ID不能为空', false);
+      return;
+    }
+    ensureSessionId(userId)
+      .then(() => {
+        // 清空聊天消息内容
+        const messagesContainer = document.getElementById('chat-messages');
+        messagesContainer.innerHTML = '<div class="chat-welcome"><p>开始提问吧！基于知识库的智能问答系统已就绪。</p></div>';
+        showToast('已创建新会话');
+      })
+      .catch((err) => showToast(err.message, false));
   });
   chatUserInput.addEventListener('change', () => {
     chatSessionInput.value = '';
@@ -739,7 +1386,32 @@ function bindEvents() {
 async function bootstrap() {
   bindEvents();
   switchTab('chat');
+  
+  // 输入框自动调整高度
+  const chatInput = document.getElementById('chat-query');
+  if (chatInput) {
+    chatInput.addEventListener('input', () => {
+      chatInput.style.height = 'auto';
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 200) + 'px';
+    });
+    
+    // 支持 Shift+Enter 换行，Enter 发送
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const form = document.getElementById('chat-form');
+        if (form && chatInput.value.trim()) {
+          form.requestSubmit();
+        }
+      }
+    });
+  }
+  
   try {
+    const userId = chatUserInput.value.trim();
+    if (userId && !chatSessionInput.value.trim()) {
+      await ensureSessionId(userId);
+    }
     await Promise.all([refreshDocuments(), refreshStats(), refreshHistory(), refreshChunks()]);
   } catch (error) {
     showToast(error.message || '初始化失败', false);

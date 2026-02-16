@@ -12,9 +12,15 @@ from typing import Any, Dict, List, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
-    from .history_store import DatabaseHistoryStore, InMemoryHistoryStore
+    from .store.db.history_store import DatabaseHistoryStore
+    from .store.interfaces import HistoryStore, SessionIdStore
+    from .store.memory_store import InMemoryHistoryStore, InMemorySessionIdStore
+    from .store.redis.session_store import RedisSessionIdStore
 except ImportError:  # pragma: no cover
-    from history_store import DatabaseHistoryStore, InMemoryHistoryStore
+    from store.db.history_store import DatabaseHistoryStore
+    from store.interfaces import HistoryStore, SessionIdStore
+    from store.memory_store import InMemoryHistoryStore, InMemorySessionIdStore
+    from store.redis.session_store import RedisSessionIdStore
 
 try:
     from .knowledge_base import KnowledgeBase
@@ -31,10 +37,15 @@ class KnowledgeBaseApi:
 
     def __init__(self, knowledge_base: KnowledgeBase):
         self.kb = knowledge_base
-        self._history_store = self._init_history_store()
-        self._chat_context_cfg = self._load_project_config().get("chat_context", {})
+        self._history_store: HistoryStore = self._init_history_store()
+        self._session_store: SessionIdStore = self._init_session_store()
+        config = self._load_project_config()
+        self._chat_context_cfg = config.get("chat_context", {})
         if not isinstance(self._chat_context_cfg, dict):
             self._chat_context_cfg = {}
+        self._chat_cfg = config.get("knowledge_base", {}).get("chat", {})
+        if not isinstance(self._chat_cfg, dict):
+            self._chat_cfg = {}
 
     @staticmethod
     def _now_iso() -> str:
@@ -65,6 +76,46 @@ class KnowledgeBaseApi:
             return max(1, int(raw))
         except Exception:
             return 6
+
+    def _default_chat_max_tokens(self) -> int | None:
+        raw = self._chat_cfg.get("max_tokens")
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except Exception:
+            return None
+        return value if value > 0 else None
+
+    @staticmethod
+    def _extract_thinking_summary(text: str) -> tuple[str, str | None]:
+        start_tag = "<thinking_summary>"
+        end_tag = "</thinking_summary>"
+        if not text:
+            return "", None
+        start = text.find(start_tag)
+        if start < 0:
+            return text.strip(), None
+        end = text.find(end_tag, start + len(start_tag))
+        if end < 0:
+            return text.strip(), None
+        summary = text[start + len(start_tag): end].strip()
+        cleaned = (text[:start] + text[end + len(end_tag):]).strip()
+        return cleaned, summary
+
+    @staticmethod
+    def _split_text_by_lengths(text: str, lengths: Sequence[int]) -> List[str]:
+        chunks: List[str] = []
+        idx = 0
+        for length in lengths:
+            if idx >= len(text):
+                break
+            end = idx + int(length)
+            chunks.append(text[idx:end])
+            idx = end
+        if idx < len(text):
+            chunks.append(text[idx:])
+        return chunks
 
     def _load_chat_context(self, user_id: str | None, session_id: str | None) -> List[Dict[str, Any]]:
         if not self._chat_context_enabled():
@@ -119,11 +170,11 @@ class KnowledgeBaseApi:
 
     def _init_history_store(self):
         config = self._load_project_config()
-        history_cfg = config.get("history", {})
-        if not isinstance(history_cfg, dict):
-            history_cfg = {}
+        db_cfg = config.get("db", {})
+        if not isinstance(db_cfg, dict):
+            db_cfg = {}
 
-        backend_raw = os.getenv("KB_HISTORY_BACKEND") or history_cfg.get("backend") or "memory"
+        backend_raw = os.getenv("KB_HISTORY_BACKEND") or db_cfg.get("backend") or "memory"
         backend = str(backend_raw or "").strip().lower()
         if backend in {"", "memory", "in_memory", "none"}:
             logger.info("History storage backend: memory")
@@ -133,21 +184,21 @@ class KnowledgeBaseApi:
         if backend not in {"mysql", "postgresql"}:
             raise ValueError(f"Unsupported history backend: {backend}")
 
-        db_cfg_key = "mysql" if backend == "mysql" else "postgresql"
-        db_cfg = history_cfg.get(db_cfg_key, {})
-        if not isinstance(db_cfg, dict):
-            db_cfg = {}
+        db_type_key = "mysql" if backend == "mysql" else "postgresql"
+        db_type_cfg = db_cfg.get(db_type_key, {})
+        if not isinstance(db_type_cfg, dict):
+            db_type_cfg = {}
 
         default_port = 3306 if backend == "mysql" else 5432
         env_prefix = "KB_HISTORY_MYSQL_" if backend == "mysql" else "KB_HISTORY_PG_"
 
-        host = os.getenv(env_prefix + "HOST") or db_cfg.get("host", "127.0.0.1")
-        port = os.getenv(env_prefix + "PORT") or db_cfg.get("port", default_port)
-        user = os.getenv(env_prefix + "USER") or db_cfg.get("user", "")
-        password = os.getenv(env_prefix + "PASSWORD") or db_cfg.get("password", "")
-        database = os.getenv(env_prefix + "DATABASE") or db_cfg.get("database", "knowledge_base")
-        table = os.getenv("KB_HISTORY_TABLE") or history_cfg.get("table", "kb_history")
-        timeout = os.getenv(env_prefix + "CONNECT_TIMEOUT") or db_cfg.get("connect_timeout", 5)
+        host = os.getenv(env_prefix + "HOST") or db_type_cfg.get("host", "127.0.0.1")
+        port = os.getenv(env_prefix + "PORT") or db_type_cfg.get("port", default_port)
+        user = os.getenv(env_prefix + "USER") or db_type_cfg.get("user", "")
+        password = os.getenv(env_prefix + "PASSWORD") or db_type_cfg.get("password", "")
+        database = os.getenv(env_prefix + "DATABASE") or db_type_cfg.get("database", "knowledge_base")
+        table = os.getenv("KB_HISTORY_TABLE") or db_cfg.get("table", "kb_session_messages")
+        timeout = os.getenv(env_prefix + "CONNECT_TIMEOUT") or db_type_cfg.get("connect_timeout", 5)
 
         store = DatabaseHistoryStore(
             backend=backend,
@@ -169,12 +220,60 @@ class KnowledgeBaseApi:
         )
         return store
 
-    def log_event(self, action: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        return self._append_history(
-            action=action,
-            request=payload or {},
-            response={"ok": True},
+    def _init_session_store(self):
+        config = self._load_project_config()
+        session_cfg = config.get("session", {})
+        if not isinstance(session_cfg, dict):
+            session_cfg = {}
+
+        backend_raw = os.getenv("KB_SESSION_BACKEND") or session_cfg.get("backend") or "memory"
+        backend = str(backend_raw or "").strip().lower()
+        if backend in {"", "memory", "in_memory", "none"}:
+            logger.info("Session storage backend: memory")
+            return InMemorySessionIdStore()
+        if backend != "redis":
+            raise ValueError(f"Unsupported session backend: {backend}")
+
+        redis_cfg = session_cfg.get("redis", {})
+        if not isinstance(redis_cfg, dict):
+            redis_cfg = {}
+
+        host = os.getenv("KB_SESSION_REDIS_HOST") or redis_cfg.get("host", "127.0.0.1")
+        port = os.getenv("KB_SESSION_REDIS_PORT") or redis_cfg.get("port", 6379)
+        database = os.getenv("KB_SESSION_REDIS_DB") or redis_cfg.get("database", 0)
+        password = os.getenv("KB_SESSION_REDIS_PASSWORD") or redis_cfg.get("password", "")
+        key_prefix = os.getenv("KB_SESSION_REDIS_PREFIX") or redis_cfg.get("key_prefix", "kb:session:")
+
+        try:
+            store = RedisSessionIdStore(
+                host=str(host),
+                port=int(port),
+                database=int(database),
+                password=str(password or "") or None,
+                key_prefix=str(key_prefix or "kb:session:"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Session storage backend failed (redis). Falling back to memory: %s",
+                exc,
+            )
+            return InMemorySessionIdStore()
+
+        logger.info(
+            "Session storage backend: redis (%s:%s db=%s)",
+            host,
+            port,
+            database,
         )
+        return store
+
+    def _new_session_id(self, user_id: str | None) -> str:
+        if not user_id:
+            raise ValueError("user_id is required")
+        return self._session_store.new_session_id(user_id)
+
+    def log_event(self, action: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return {"ok": True}
 
     def _resolve_llm_model(self, explicit_model: str | None = None) -> str:
         model = (explicit_model or "").strip()
@@ -237,10 +336,43 @@ class KnowledgeBaseApi:
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
         history_messages: Sequence[Dict[str, Any]] | None = None,
-    ) -> str:
+        deep_think: bool = True,
+    ) -> tuple[str, str | None]:
+        # 输入参数日志
+        logger.info("=== _answer_from_lm_studio 方法调用 ===")
+        logger.info("输入参数:")
+        logger.info("  question: %s", question[:100] if len(question) > 100 else question)
+        logger.info("  results count: %d", len(results) if results else 0)
+        logger.info("  llm_model: %s", llm_model)
+        logger.info("  temperature: %s", temperature)
+        logger.info("  max_tokens: %s", max_tokens)
+        logger.info("  deep_think: %s", deep_think)
+        logger.info("  history_messages count: %d", len(history_messages) if history_messages else 0)
+        if history_messages:
+            logger.info("  history_messages 详情:")
+            for i, msg in enumerate(history_messages):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
+        
         model = self._resolve_llm_model(llm_model)
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
+        
+        # 添加深度思考提示
+        if deep_think:
+            system_prompt += (
+                "\n\n请进行深度思考和分析：\n"
+                "1. 仔细分析问题的多个方面\n"
+                "2. 考虑相关的背景信息和上下文\n"
+                "3. 提供全面和深层的解释\n"
+                "4. 如有必要，说明你的推理过程\n\n"
+                "请在答案末尾追加思考摘要，不要输出完整推理链，"
+                "使用如下标签包裹：\n"
+                "<thinking_summary>...简要思考摘要...</thinking_summary>"
+            )
+        
         if user_prompt == "No relevant knowledge-base content was retrieved.":
+            logger.warning("检索到的知识库内容为空")
             return user_prompt
         messages = [
             {"role": "system", "content": system_prompt},
@@ -248,13 +380,32 @@ class KnowledgeBaseApi:
         if history_messages:
             messages.extend(list(history_messages))
         messages.append({"role": "user", "content": user_prompt})
+        
+        logger.info("构建完整消息列表:")
+        logger.info("  total messages: %d", len(messages))
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
+        
         answer = self.kb.chat_once(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return str(answer or "").strip()
+        
+        # 输出参数日志
+        result = str(answer or "").strip()
+        result, thinking_summary = self._extract_thinking_summary(result)
+        logger.info("=== _answer_from_lm_studio 方法返回 ===")
+        logger.info("输出参数:")
+        logger.info("  answer: %s", result[:200] if len(result) > 200 else result)
+        logger.info("  answer_length: %d", len(result))
+        if thinking_summary:
+            logger.info("  thinking_summary_length: %d", len(thinking_summary))
+        logger.info("=== 方法执行完成 ===")
+        return result, thinking_summary
 
     def _answer_stream_from_lm_studio(
         self,
@@ -264,10 +415,43 @@ class KnowledgeBaseApi:
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
         history_messages: Sequence[Dict[str, Any]] | None = None,
-    ) -> Sequence[str]:
+        deep_think: bool = True,
+    ) -> tuple[Sequence[str], str | None]:
+        # 输入参数日志
+        logger.info("=== _answer_stream_from_lm_studio 方法调用 ===")
+        logger.info("输入参数:")
+        logger.info("  question: %s", question[:100] if len(question) > 100 else question)
+        logger.info("  results count: %d", len(results) if results else 0)
+        logger.info("  llm_model: %s", llm_model)
+        logger.info("  temperature: %s", temperature)
+        logger.info("  max_tokens: %s", max_tokens)
+        logger.info("  deep_think: %s", deep_think)
+        logger.info("  history_messages count: %d", len(history_messages) if history_messages else 0)
+        if history_messages:
+            logger.info("  history_messages 详情:")
+            for i, msg in enumerate(history_messages):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
+        
         model = self._resolve_llm_model(llm_model)
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
+        
+        # 添加深度思考提示
+        if deep_think:
+            system_prompt += (
+                "\n\n请进行深度思考和分析：\n"
+                "1. 仔细分析问题的多个方面\n"
+                "2. 考虑相关的背景信息和上下文\n"
+                "3. 提供全面和深层的解释\n"
+                "4. 如有必要，说明你的推理过程\n\n"
+                "请在答案末尾追加思考摘要，不要输出完整推理链，"
+                "使用如下标签包裹：\n"
+                "<thinking_summary>...简要思考摘要...</thinking_summary>"
+            )
+        
         if user_prompt == "No relevant knowledge-base content was retrieved.":
+            logger.warning("检索到的知识库内容为空")
             return [user_prompt]
         messages = [
             {"role": "system", "content": system_prompt},
@@ -275,12 +459,42 @@ class KnowledgeBaseApi:
         if history_messages:
             messages.extend(list(history_messages))
         messages.append({"role": "user", "content": user_prompt})
-        return self.kb.chat_stream(
+        
+        logger.info("构建完整消息列表:")
+        logger.info("  total messages: %d", len(messages))
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
+        
+        logger.info("=== _answer_stream_from_lm_studio 开始流式返回 ===")
+        stream_result = self.kb.chat_stream(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        
+        # 转换为列表以便日志记录
+        stream_list = list(stream_result)
+        stream_text = "".join(str(chunk) for chunk in stream_list)
+        stream_text, thinking_summary = self._extract_thinking_summary(stream_text)
+        if thinking_summary:
+            lengths = [len(str(chunk)) for chunk in stream_list]
+            stream_list = self._split_text_by_lengths(stream_text, lengths)
+        logger.info("=== _answer_stream_from_lm_studio 方法返回 ===")
+        logger.info("输出参数:")
+        logger.info("  stream chunks count: %d", len(stream_list))
+        total_length = sum(len(str(chunk)) for chunk in stream_list)
+        logger.info("  total stream content length: %d", total_length)
+        for i, chunk in enumerate(stream_list[:5]):  # 只记录前5个块
+            logger.info("    [%d] %s", i, str(chunk)[:100])
+        if len(stream_list) > 5:
+            logger.info("    ... 以及 %d 个更多的块", len(stream_list) - 5)
+        if thinking_summary:
+            logger.info("  thinking_summary_length: %d", len(thinking_summary))
+        logger.info("=== 方法执行完成 ===")
+        return stream_list, thinking_summary
 
     @staticmethod
     def _distance_to_similarity(distance: float) -> float:
@@ -300,8 +514,11 @@ class KnowledgeBaseApi:
         max_tokens: int | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
+        deep_think: bool = True,
     ) -> Dict[str, Any]:
-        logger.info("API query called: k=%s generate_answer=%s", k, generate_answer)
+        if max_tokens is None:
+            max_tokens = self._default_chat_max_tokens()
+        logger.info("API query called: k=%s generate_answer=%s deep_think=%s", k, generate_answer, deep_think)
         req = {
             "query": query,
             "k": int(k),
@@ -314,6 +531,7 @@ class KnowledgeBaseApi:
             "max_tokens": max_tokens,
             "user_id": user_id,
             "session_id": session_id,
+            "deep_think": bool(deep_think),
         }
         try:
             raw = self.kb.search(query=query, k=k, relevance_threshold=relevance_threshold)
@@ -336,16 +554,18 @@ class KnowledgeBaseApi:
             history_messages = self._load_chat_context(user_id, session_id)
             system_prompt, user_prompt = self._build_chat_prompts(query, ranked_results)
             if generate_answer:
-                answer = self._answer_from_lm_studio(
+                answer, thinking_summary = self._answer_from_lm_studio(
                     question=query,
                     results=ranked_results,
                     llm_model=llm_model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     history_messages=history_messages,
+                    deep_think=deep_think,
                 )
             else:
                 finish_reason = "not_requested"
+                thinking_summary = None
             messages = [
                 {"role": "system", "content": system_prompt},
                 *history_messages,
@@ -359,6 +579,7 @@ class KnowledgeBaseApi:
                 "results": result_items,
                 "session_id": session_id,
                 "user_id": user_id,
+                "thinking_summary": thinking_summary,
                 "messages": messages,
             }
             self._append_history("query", req, resp)
@@ -380,7 +601,10 @@ class KnowledgeBaseApi:
         max_tokens: int | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
+        deep_think: bool = True,
     ) -> Dict[str, Any]:
+        if max_tokens is None:
+            max_tokens = self._default_chat_max_tokens()
         req = {
             "query": query,
             "k": int(k),
@@ -394,6 +618,7 @@ class KnowledgeBaseApi:
             "stream": True,
             "user_id": user_id,
             "session_id": session_id,
+            "deep_think": bool(deep_think),
         }
         raw = self.kb.search(query=query, k=k, relevance_threshold=relevance_threshold)
         ranked_results = []
@@ -412,16 +637,20 @@ class KnowledgeBaseApi:
 
         stream = []
         history_messages = self._load_chat_context(user_id, session_id)
+        logger.info("上下文=%s", history_messages)
         system_prompt, user_prompt = self._build_chat_prompts(query, ranked_results)
         if generate_answer:
-            stream = self._answer_stream_from_lm_studio(
+            stream, thinking_summary = self._answer_stream_from_lm_studio(
                 question=query,
                 results=ranked_results,
                 llm_model=llm_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 history_messages=history_messages,
+                deep_think=deep_think,
             )
+        else:
+            thinking_summary = None
         return {
             "req": req,
             "results": result_items,
@@ -429,55 +658,38 @@ class KnowledgeBaseApi:
             "history_messages": history_messages,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
+            "thinking_summary": thinking_summary,
         }
 
     def add_document(self, filename: str, text: str) -> Dict[str, Any]:
-        req = {"filename": filename, "text_length": len((text or "").strip())}
         try:
             chunks = self.kb.add_document(filename, text)
             resp = {"ok": True, "chunks_added": int(chunks)}
-            self._append_history("add_document", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("add_document", req, {"ok": False}, error=str(exc))
             raise
 
     def add_file(self, file_path: str) -> Dict[str, Any]:
-        req = {"file_path": file_path}
         try:
             chunks = self.kb.add_text_file(file_path)
             resp = {"ok": True, "chunks_added": int(chunks)}
-            self._append_history("add_file", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("add_file", req, {"ok": False}, error=str(exc))
             raise
 
     def add_uploaded_file(
         self, filename: str, content: bytes, encoding: str | None = None
     ) -> Dict[str, Any]:
-        req = {
-            "filename": filename,
-            "content_length": len(content or b""),
-            "encoding": encoding,
-        }
         try:
             chunks = self.kb.add_uploaded_file(filename=filename, content=content, encoding=encoding)
             resp = {"ok": True, "chunks_added": int(chunks)}
-            self._append_history("add_uploaded_file", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("add_uploaded_file", req, {"ok": False}, error=str(exc))
             raise
 
     def add_uploaded_files(
         self, files: Sequence[Dict[str, Any]], encoding: str | None = None
     ) -> Dict[str, Any]:
-        req = {
-            "file_count": len(files),
-            "total_bytes": sum(len(item.get("content") or b"") for item in files),
-            "encoding": encoding,
-        }
         try:
             total_chunks = 0
             for item in files:
@@ -490,10 +702,8 @@ class KnowledgeBaseApi:
                     encoding=encoding,
                 )
             resp = {"ok": True, "chunks_added": int(total_chunks)}
-            self._append_history("add_uploaded_files", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("add_uploaded_files", req, {"ok": False}, error=str(exc))
             raise
 
     def list_chunks(
@@ -503,12 +713,6 @@ class KnowledgeBaseApi:
         filename: str | None = None,
         query: str | None = None,
     ) -> Dict[str, Any]:
-        req = {
-            "pageIndex": page_index,
-            "pageSize": page_size,
-            "filename": filename,
-            "query": query,
-        }
         try:
             result = self.kb.list_chunks(
                 page_index=page_index,
@@ -516,90 +720,84 @@ class KnowledgeBaseApi:
                 filename=filename,
                 query=query,
             )
+            if result is None:
+                result = {}
             resp = {"ok": True, "count": int(result.get("total", 0)), "chunks": result.get("items", [])}
-            self._append_history("list_chunks", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("list_chunks", req, {"ok": False}, error=str(exc))
             raise
 
     def update_chunk(self, chunk_id: int, text: str) -> Dict[str, Any]:
-        req = {"chunk_id": int(chunk_id), "text_length": len((text or "").strip())}
         try:
             self.kb.update_chunk(chunk_id=chunk_id, text=text)
             resp = {"ok": True}
-            self._append_history("update_chunk", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("update_chunk", req, {"ok": False}, error=str(exc))
             raise
 
     def delete_chunk(self, chunk_id: int) -> Dict[str, Any]:
-        req = {"chunk_id": int(chunk_id)}
         try:
             self.kb.delete_chunk(chunk_id=chunk_id)
             resp = {"ok": True}
-            self._append_history("delete_chunk", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("delete_chunk", req, {"ok": False}, error=str(exc))
             raise
 
     def rebuild_chunks_for_filename(self, filename: str) -> Dict[str, Any]:
-        req = {"filename": filename}
         try:
             chunks = self.kb.rebuild_chunks_for_filename(filename)
             resp = {"ok": True, "chunks_added": int(chunks)}
-            self._append_history("rebuild_chunks", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("rebuild_chunks", req, {"ok": False}, error=str(exc))
             raise
 
     def remove_document(self, filename: str) -> Dict[str, Any]:
-        req = {"filename": filename}
         try:
             removed = self.kb.remove_document(filename)
             resp = {"ok": True, "chunks_removed": int(removed)}
-            self._append_history("remove_document", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("remove_document", req, {"ok": False}, error=str(exc))
             raise
 
     def list_documents(self) -> Dict[str, Any]:
-        req: Dict[str, Any] = {}
         docs = self.kb.list_documents()
         resp = {"ok": True, "count": len(docs), "documents": docs}
-        self._append_history("list_documents", req, resp)
         return resp
 
     def get_knowledge_base_stats(self) -> Dict[str, Any]:
-        req: Dict[str, Any] = {}
         stats = self.kb.stats()
         resp = {"ok": True, "stats": stats}
-        self._append_history("get_knowledge_base_stats", req, resp)
         return resp
 
     def clear_knowledge_base(self) -> Dict[str, Any]:
-        req: Dict[str, Any] = {}
         try:
             self.kb.clear()
             resp = {"ok": True}
-            self._append_history("clear_knowledge_base", req, resp)
             return resp
         except Exception as exc:
-            self._append_history("clear_knowledge_base", req, {"ok": False}, error=str(exc))
             raise
 
     def get_history(self, limit: int | None = None, action: str | None = None) -> List[Dict[str, Any]]:
         return self._history_store.get(limit=limit, action=action)
+
+    def get_history_sessions(self, limit: int | None = None, action: str | None = None) -> List[Dict[str, Any]]:
+        """按session分组获取历史记录"""
+        return self._history_store.get_by_sessions(limit=limit, action=action)
 
     def clear_history(self) -> int:
         return self._history_store.clear()
 
     def delete_history(self, item_id: int) -> int:
         return self._history_store.delete(item_id)
+
+    def delete_session(self, session_id: str) -> int:
+        """删除整个session及其所有消息"""
+        if hasattr(self._history_store, 'delete_session'):
+            return self._history_store.delete_session(session_id)
+        else:
+            # 如果是内存存储，需要删除所有属于该session的消息
+            # 这里暂不实现，因为主要针对数据库存储
+            raise NotImplementedError("delete_session not supported for this store")
 
 
 class API(KnowledgeBaseApi):
@@ -880,6 +1078,15 @@ class HttpApiServer:
                 parsed = urlparse(self.path)
                 return parse_qs(parsed.query, keep_blank_values=True)
 
+            def _get_param_value(self, params: Dict[str, List[str]], key: str, default: str = "") -> str:
+                """安全地从查询参数字典中获取值"""
+                if not isinstance(params, dict):
+                    return default
+                values = params.get(key)
+                if not values or not isinstance(values, list) or len(values) == 0:
+                    return default
+                return values[-1] if values[-1] is not None else default
+
             @staticmethod
             def _to_positive_int(value: Any, default: int = 1) -> int:
                 try:
@@ -889,11 +1096,13 @@ class HttpApiServer:
                 return num if num > 0 else int(default)
 
             def _page_index_from_params(self, params: Dict[str, List[str]]) -> int:
-                raw = params.get("pageIndex", ["1"])[-1] if isinstance(params, dict) else "1"
+                raw = self._get_param_value(params, "pageIndex", "1")
                 return self._to_positive_int(raw, default=1)
 
             def _page_index_from_body(self, body: Dict[str, Any]) -> int:
-                raw = body.get("pageIndex", 1) if isinstance(body, dict) else 1
+                if not isinstance(body, dict):
+                    return 1
+                raw = body.get("pageIndex", 1)
                 return self._to_positive_int(raw, default=1)
 
             def _path(self) -> str:
@@ -931,6 +1140,23 @@ class HttpApiServer:
                     if path == "/health":
                         self._ok({"ok": True, "message": "alive"})
                         return
+                    if path == "/session":
+                        params = self._parse_query_params()
+                        page_index = self._page_index_from_params(params)
+                        user_id = None
+                        if "user_id" in params and params["user_id"]:
+                            user_id = params["user_id"][-1].strip() or None
+                        if "userId" in params and params["userId"]:
+                            user_id = params["userId"][-1].strip() or user_id
+                        if not user_id:
+                            self._bad_request("user_id is required")
+                            return
+                        session_id = api._new_session_id(user_id)
+                        self._ok(
+                            {"ok": True, "user_id": user_id, "session_id": session_id},
+                            page_index=page_index,
+                        )
+                        return
                     if path == "/query":
                         params = self._parse_query_params()
                         page_index = self._page_index_from_params(params)
@@ -949,7 +1175,7 @@ class HttpApiServer:
                         if "sessionId" in params and params["sessionId"]:
                             session_id = params["sessionId"][-1].strip() or session_id
                         if user_id and not session_id:
-                            session_id = uuid.uuid4().hex
+                            session_id = api._new_session_id(user_id)
                         query = ""
                         if "query" in params and params["query"]:
                             query = params["query"][-1].strip()
@@ -983,6 +1209,17 @@ class HttpApiServer:
                                 self._bad_request("generate_answer must be bool")
                                 return
 
+                        deep_think = True
+                        if "deep_think" in params and params["deep_think"]:
+                            raw = params["deep_think"][-1].strip().lower()
+                            if raw in {"1", "true", "yes", "on"}:
+                                deep_think = True
+                            elif raw in {"0", "false", "no", "off"}:
+                                deep_think = False
+                            else:
+                                self._bad_request("deep_think must be bool")
+                                return
+
                         temperature = 0.2
                         if "temperature" in params and params["temperature"]:
                             try:
@@ -991,7 +1228,7 @@ class HttpApiServer:
                                 self._bad_request("temperature must be float")
                                 return
 
-                        max_tokens = None
+                        max_tokens = api._default_chat_max_tokens()
                         if "max_tokens" in params and params["max_tokens"]:
                             try:
                                 max_tokens = int(params["max_tokens"][-1])
@@ -1011,6 +1248,7 @@ class HttpApiServer:
                                 max_tokens=max_tokens,
                                 user_id=user_id,
                                 session_id=session_id,
+                                deep_think=deep_think,
                             )
                             answer_parts: List[str] = []
                             self._send_sse(
@@ -1039,6 +1277,7 @@ class HttpApiServer:
                                 "results": data.get("results", []),
                                 "session_id": session_id,
                                 "user_id": user_id,
+                                "thinking_summary": data.get("thinking_summary"),
                                 "messages": [
                                     {"role": "system", "content": data.get("system_prompt", "")},
                                     *data.get("history_messages", []),
@@ -1047,7 +1286,13 @@ class HttpApiServer:
                                 ],
                             }
                             api._append_history("query", data.get("req", {}), resp)
-                            self._send_sse("done", {"finish_reason": finish_reason})
+                            self._send_sse(
+                                "done",
+                                {
+                                    "finish_reason": finish_reason,
+                                    "thinking_summary": data.get("thinking_summary"),
+                                },
+                            )
                             return
                         self._ok(
                             api.query(
@@ -1060,6 +1305,7 @@ class HttpApiServer:
                                 max_tokens=max_tokens,
                                 user_id=user_id,
                                 session_id=session_id,
+                                deep_think=deep_think,
                             ),
                             page_index=page_index,
                         )
@@ -1076,16 +1322,17 @@ class HttpApiServer:
                         page_size = 20
                         filename = None
                         query = None
-                        if "pageSize" in params and params["pageSize"]:
+                        
+                        page_size_str = self._get_param_value(params, "pageSize", "")
+                        if page_size_str:
                             try:
-                                page_size = int(params["pageSize"][-1])
+                                page_size = int(page_size_str)
                             except Exception:
                                 self._bad_request("pageSize must be int")
                                 return
-                        if "filename" in params and params["filename"]:
-                            filename = params["filename"][-1].strip() or None
-                        if "q" in params and params["q"]:
-                            query = params["q"][-1].strip() or None
+                        
+                        filename = self._get_param_value(params, "filename", "").strip() or None
+                        query = self._get_param_value(params, "q", "").strip() or None
                         self._ok(
                             api.list_chunks(
                                 page_index=page_index,
@@ -1101,6 +1348,8 @@ class HttpApiServer:
                         page_index = self._page_index_from_params(params)
                         limit = None
                         action = None
+                        group_by_session = False
+                        
                         if "limit" in params and params["limit"]:
                             try:
                                 limit = int(params["limit"][-1])
@@ -1109,10 +1358,15 @@ class HttpApiServer:
                                 return
                         if "action" in params and params["action"]:
                             action = params["action"][-1]
-                        self._ok(
-                            {"ok": True, "history": api.get_history(limit=limit, action=action)},
-                            page_index=page_index,
-                        )
+                        if "group_by_session" in params and params["group_by_session"]:
+                            group_by_session = params["group_by_session"][-1].lower() in ("true", "1", "yes")
+                        
+                        if group_by_session:
+                            result = {"ok": True, "sessions": api.get_history_sessions(limit=limit, action=action)}
+                        else:
+                            result = {"ok": True, "history": api.get_history(limit=limit, action=action)}
+                        
+                        self._ok(result, page_index=page_index)
                         return
                     self._not_found()
                 except Exception as exc:
@@ -1173,6 +1427,17 @@ class HttpApiServer:
                         return
                     body = self._read_json()
                     page_index = self._page_index_from_body(body)
+                    if path == "/session":
+                        user_id = str(body.get("user_id") or body.get("userId") or "").strip() or None
+                        if not user_id:
+                            self._bad_request("user_id is required")
+                            return
+                        session_id = api._new_session_id(user_id)
+                        self._ok(
+                            {"ok": True, "user_id": user_id, "session_id": session_id},
+                            page_index=page_index,
+                        )
+                        return
                     if path == "/query":
                         query = str(body.get("query", "")).strip()
                         if not query:
@@ -1181,7 +1446,7 @@ class HttpApiServer:
                         user_id = str(body.get("user_id") or body.get("userId") or "").strip() or None
                         session_id = str(body.get("session_id") or body.get("sessionId") or "").strip() or None
                         if user_id and not session_id:
-                            session_id = uuid.uuid4().hex
+                            session_id = api._new_session_id(user_id)
                         generate_answer_raw = body.get("generate_answer", True)
                         if isinstance(generate_answer_raw, bool):
                             generate_answer = generate_answer_raw
@@ -1199,6 +1464,22 @@ class HttpApiServer:
                         else:
                             self._bad_request("generate_answer must be bool")
                             return
+                        deep_think_raw = body.get("deep_think", True)
+                        if isinstance(deep_think_raw, bool):
+                            deep_think = deep_think_raw
+                        elif isinstance(deep_think_raw, (int, float)):
+                            deep_think = bool(deep_think_raw)
+                        elif isinstance(deep_think_raw, str):
+                            val = deep_think_raw.strip().lower()
+                            if val in {"1", "true", "yes", "on"}:
+                                deep_think = True
+                            elif val in {"0", "false", "no", "off"}:
+                                deep_think = False
+                            else:
+                                self._bad_request("deep_think must be bool")
+                                return
+                        else:
+                            deep_think = True
                         k = int(body.get("k", 2))
                         threshold_raw = body.get("relevance_threshold")
                         relevance_threshold = (
@@ -1208,7 +1489,10 @@ class HttpApiServer:
                         temperature_raw = body.get("temperature", 0.2)
                         max_tokens_raw = body.get("max_tokens")
                         temperature = None if temperature_raw is None else float(temperature_raw)
-                        max_tokens = None if max_tokens_raw is None else int(max_tokens_raw)
+                        if max_tokens_raw is None:
+                            max_tokens = api._default_chat_max_tokens()
+                        else:
+                            max_tokens = int(max_tokens_raw)
                         stream_mode = bool(body.get("stream", False))
                         if stream_mode:
                             self._send_sse_headers()
@@ -1222,6 +1506,7 @@ class HttpApiServer:
                                 max_tokens=max_tokens,
                                 user_id=user_id,
                                 session_id=session_id,
+                                deep_think=deep_think,
                             )
                             answer_parts: List[str] = []
                             self._send_sse(
@@ -1250,6 +1535,7 @@ class HttpApiServer:
                                 "results": data.get("results", []),
                                 "session_id": session_id,
                                 "user_id": user_id,
+                                "thinking_summary": data.get("thinking_summary"),
                                 "messages": [
                                     {"role": "system", "content": data.get("system_prompt", "")},
                                     *data.get("history_messages", []),
@@ -1258,7 +1544,13 @@ class HttpApiServer:
                                 ],
                             }
                             api._append_history("query", data.get("req", {}), resp)
-                            self._send_sse("done", {"finish_reason": finish_reason})
+                            self._send_sse(
+                                "done",
+                                {
+                                    "finish_reason": finish_reason,
+                                    "thinking_summary": data.get("thinking_summary"),
+                                },
+                            )
                             return
                         self._ok(
                             api.query(
@@ -1271,6 +1563,7 @@ class HttpApiServer:
                                 max_tokens=max_tokens,
                                 user_id=user_id,
                                 session_id=session_id,
+                                deep_think=deep_think,
                             ),
                             page_index=page_index,
                         )
@@ -1348,6 +1641,20 @@ class HttpApiServer:
                             self._not_found()
                             return
                         self._ok({"ok": True, "removed": removed})
+                        return
+                    if path.startswith("/session/"):
+                        session_id = unquote(path[len("/session/") :]).strip()
+                        if not session_id:
+                            self._bad_request("session_id is required")
+                            return
+                        try:
+                            removed = api.delete_session(session_id)
+                            if removed <= 0:
+                                self._not_found()
+                                return
+                            self._ok({"ok": True, "removed": removed})
+                        except NotImplementedError:
+                            self._bad_request("delete_session not supported")
                         return
                     if path.startswith("/kb/document/"):
                         filename = unquote(path[len("/kb/document/") :]).strip()

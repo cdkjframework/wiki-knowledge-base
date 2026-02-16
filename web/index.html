@@ -46,48 +46,69 @@
           </aside>
 
           <div class="chat-main">
-            <form id="chat-form" class="card form-grid">
-              <label class="field full">
-                <span>问题</span>
-                <textarea id="chat-query" rows="4" placeholder="例如：如何重置管理员密码？" required></textarea>
-              </label>
-              <label class="field">
-                <span>用户ID</span>
-                <input id="chat-user-id" type="text" placeholder="user-001" required>
-              </label>
-              <label class="field">
-                <span>Session ID</span>
-                <div class="session-row">
-                  <input id="chat-session-id" type="text" placeholder="由系统生成" readonly>
-                  <button id="btn-reset-session" class="btn" type="button">新会话</button>
+            <div class="card chat-settings">
+              <details>
+                <summary><strong>⚙️ 高级设置</strong></summary>
+                <div class="settings-grid">
+                  <label class="field size-small">
+                    <span>用户ID</span>
+                    <input id="chat-user-id" type="text" placeholder="user-001" value="user-001" required>
+                  </label>
+                  <label class="field size-small">
+                    <span>Session ID</span>
+                    <div class="session-row">
+                      <input id="chat-session-id" type="text" placeholder="由系统生成" readonly>
+                      <button id="btn-reset-session" class="btn size-small" type="button">新会话</button>
+                    </div>
+                  </label>
+                  <label class="field size-small">
+                    <span>返回条数 k</span>
+                    <input id="chat-k" type="number" min="1" value="2">
+                  </label>
+                  <label class="field size-small">
+                    <span>相关性阈值</span>
+                    <input id="chat-threshold" type="number" step="0.01" placeholder="可选">
+                  </label>
+                  <label class="field checkbox-field">
+                    <input id="chat-generate" type="checkbox" checked>
+                    <span>生成答案</span>
+                  </label>
                 </div>
-              </label>
-              <label class="field">
-                <span>返回条数 k</span>
-                <input id="chat-k" type="number" min="1" value="2">
-              </label>
-              <label class="field">
-                <span>相关性阈值</span>
-                <input id="chat-threshold" type="number" step="0.01" placeholder="可选">
-              </label>
-              <label class="field checkbox-field">
-                <input id="chat-generate" type="checkbox" checked>
-                <span>生成答案</span>
-              </label>
-              <div class="actions full">
-                <button type="submit" class="btn primary">发送</button>
+              </details>
+            </div>
+
+            <div class="card chat-box">
+              <div id="chat-messages" class="chat-messages">
+                <div class="chat-welcome">
+                  <p>开始提问吧！基于知识库的智能问答系统已就绪。</p>
+                </div>
               </div>
+            </div>
+
+            <form id="chat-form" class="chat-input-container">
+              <div class="chat-toolbar">
+                <button type="button" class="toolbar-btn" id="chat-attach-btn" title="附件">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 0 18.8-4.3M22 12.5a10 10 0 0 0-18.8 2.2"/></svg>
+                </button>
+              </div>
+              
+              <textarea id="chat-query" class="chat-input" rows="1" placeholder="输入您的问题..." required></textarea>
+              
+              <div class="chat-controls">
+                <label class="control-item" title="启用深度思考">
+                  <input type="checkbox" id="chat-deep-think" checked>
+                  <span>🧠</span>
+                </label>
+                <label class="control-item" title="网络搜索（开发中）">
+                  <input type="checkbox" id="chat-web-search" disabled>
+                  <span>🌐</span>
+                </label>
+              </div>
+              
+              <button type="submit" class="chat-send-btn" title="发送 (Ctrl+Enter)">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M16.6915026,12.4744748 L3.50612381,13.2599618 C3.19218622,13.2599618 3.03521743,13.4170592 3.03521743,13.5741566 L1.15159189,20.0151496 C0.8376543,20.8006365 0.99,21.89 1.77946707,22.52 C2.41,22.99 3.50612381,23.1 4.13399899,22.8429026 L21.714504,14.0454487 C22.6563168,13.5741566 23.1272231,12.6315722 22.9702544,11.6889879 L4.13399899,1.16115819 C3.34915502,0.9040618 2.40734225,1.00636533 1.77946707,1.4776575 C0.994623095,2.10604706 0.837654326,3.0486314 1.15159189,3.99801575 L3.03521743,10.4390088 C3.03521743,10.5960618 3.19218622,10.753159 3.50612381,10.753159 L16.6915026,11.5386722 C16.6915026,11.5386722 17.1624089,11.5386722 17.1624089,12.0099644 C17.1624089,12.4744748 16.6915026,12.4744748 16.6915026,12.4744748 Z"/></svg>
+              </button>
             </form>
-
-            <div class="card">
-              <h3>回答</h3>
-              <article id="chat-answer" class="answer markdown-body">等待提问...</article>
-            </div>
-
-            <div class="card">
-              <h3>检索结果</h3>
-              <ul id="chat-results" class="result-list"></ul>
-            </div>
           </div>
         </div>
       </section>
@@ -99,9 +120,9 @@
         </header>
 
         <div class="card row-actions">
-          <button id="btn-refresh-docs" class="btn">刷新文档列表</button>
-          <button id="btn-refresh-stats" class="btn">刷新统计</button>
-          <button id="btn-clear-kb" class="btn danger">清空知识库</button>
+          <button id="btn-refresh-docs" class="btn size-small">刷新文档列表</button>
+          <button id="btn-refresh-stats" class="btn size-small">刷新统计</button>
+          <button id="btn-clear-kb" class="btn danger size-small">清空知识库</button>
         </div>
 
         <div class="card" id="stats-box">
@@ -111,7 +132,7 @@
 
         <form id="doc-form" class="card form-grid">
           <h3 class="full">新增文本文档</h3>
-          <label class="field">
+          <label class="field size-small">
             <span>文件名</span>
             <input id="doc-filename" type="text" placeholder="example.md" required>
           </label>
@@ -120,7 +141,7 @@
             <textarea id="doc-text" rows="5" placeholder="输入文档内容" required></textarea>
           </label>
           <div class="actions full">
-            <button type="submit" class="btn primary">新增文档</button>
+            <button type="submit" class="btn primary size-small">新增文档</button>
           </div>
         </form>
 
@@ -130,16 +151,16 @@
             <span>文件</span>
             <input id="upload-file" type="file" required>
           </label>
-          <label class="field">
+          <label class="field size-small">
             <span>文件名（可选）</span>
             <input id="upload-filename" type="text" placeholder="留空使用原文件名">
           </label>
-          <label class="field">
+          <label class="field size-small">
             <span>编码（可选）</span>
             <input id="upload-encoding" type="text" placeholder="utf-8">
           </label>
           <div class="actions full">
-            <button type="submit" class="btn primary">上传</button>
+            <button type="submit" class="btn primary size-small">上传</button>
           </div>
         </form>
 
@@ -149,23 +170,23 @@
             <span>文件</span>
             <input id="batch-files" type="file" multiple required>
           </label>
-          <label class="field">
+          <label class="field size-small">
             <span>编码（可选）</span>
             <input id="batch-encoding" type="text" placeholder="utf-8">
           </label>
           <div class="actions full">
-            <button type="submit" class="btn">批量上传</button>
+            <button type="submit" class="btn size-small">批量上传</button>
           </div>
         </form>
 
         <form id="delete-form" class="card form-grid">
           <h3 class="full">删除文档</h3>
-          <label class="field">
+          <label class="field size-small">
             <span>文件名</span>
             <input id="delete-filename" type="text" placeholder="example.md" required>
           </label>
           <div class="actions full">
-            <button type="submit" class="btn danger">删除</button>
+            <button type="submit" class="btn danger size-small">删除</button>
           </div>
         </form>
 
@@ -189,32 +210,34 @@
           <div class="chunks-head">
             <h3>分片管理</h3>
             <div class="chunks-actions">
-              <button id="btn-refresh-chunks" class="btn">刷新分片</button>
+              <button id="btn-refresh-chunks" class="btn size-small">刷新分片</button>
             </div>
           </div>
           <div class="chunks-filters">
-            <label class="field">
-              <span>文件名筛选</span>
-              <input id="chunk-filename" type="text" placeholder="example.pdf">
+            <label class="field size-small">
+              <span>选择文档</span>
+              <select id="chunk-filename">
+                <option value="">-- 全部文档 --</option>
+              </select>
             </label>
-            <label class="field">
+            <label class="field size-small">
               <span>关键词搜索</span>
               <input id="chunk-query" type="text" placeholder="输入关键词">
             </label>
-            <label class="field">
+            <label class="field size-small">
               <span>每页数量</span>
               <input id="chunk-page-size" type="number" min="1" value="8">
             </label>
             <div class="actions">
-              <button id="btn-apply-chunk-filter" class="btn">应用筛选</button>
+              <button id="btn-apply-chunk-filter" class="btn size-small">应用筛选</button>
             </div>
           </div>
           <div class="chunks-rebuild">
-            <label class="field full">
+            <label class="field full size-small">
               <span>按文件名重建分片</span>
               <div class="chunks-rebuild-row">
-                <input id="chunk-rebuild-filename" type="text" placeholder="example.pdf" required>
-                <button id="btn-rebuild-chunks" class="btn danger" type="button">重建分片</button>
+                <input class="size-small" id="chunk-rebuild-filename" type="text" placeholder="example.pdf" required>
+                <button id="btn-rebuild-chunks" class="btn danger size-small" type="button">重建分片</button>
               </div>
             </label>
           </div>
@@ -232,9 +255,9 @@
             </tbody>
           </table>
           <div class="chunks-pager">
-            <button id="btn-chunk-prev" class="btn">上一页</button>
+            <button id="btn-chunk-prev" class="btn size-small">上一页</button>
             <span id="chunk-page-info">第 1 页</span>
-            <button id="btn-chunk-next" class="btn">下一页</button>
+            <button id="btn-chunk-next" class="btn size-small">下一页</button>
           </div>
         </div>
       </section>
@@ -251,14 +274,14 @@
         <button id="chunk-dialog-close" class="dialog-close" type="button" aria-label="关闭">×</button>
       </header>
       <div class="dialog-body">
-        <label class="field full">
+        <label class="field full size-small">
           <span>分片内容</span>
           <textarea id="chunk-dialog-text" rows="10" placeholder="请输入分片内容"></textarea>
         </label>
       </div>
       <footer class="dialog-footer">
-        <button id="chunk-dialog-cancel" class="btn" type="button">取消</button>
-        <button id="chunk-dialog-save" class="btn primary" type="button">保存</button>
+        <button id="chunk-dialog-cancel" class="btn size-small" type="button">取消</button>
+        <button id="chunk-dialog-save" class="btn primary size-small" type="button">保存</button>
       </footer>
     </div>
   </div>

@@ -64,6 +64,7 @@ class DatabaseHistoryStore(HistoryStore):
                 request_json LONGTEXT NOT NULL,
                 response_json LONGTEXT NULL,
                 error LONGTEXT NULL,
+                thinking_summary LONGTEXT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 KEY idx_session_id (session_id),
                 KEY idx_action (action),
@@ -100,6 +101,7 @@ class DatabaseHistoryStore(HistoryStore):
             request_json TEXT NOT NULL,
             response_json TEXT NULL,
             error TEXT NULL,
+            thinking_summary TEXT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (session_id) REFERENCES {self.sessions_table}(session_id) ON DELETE CASCADE
         );
@@ -139,6 +141,7 @@ class DatabaseHistoryStore(HistoryStore):
         request: Dict[str, Any],
         response: Dict[str, Any] | None = None,
         error: str | None = None,
+        thinking_summary: str | None = None,
     ) -> Dict[str, Any]:
         request_json = json.dumps(request, ensure_ascii=False)
         response_json = None if response is None else json.dumps(response, ensure_ascii=False)
@@ -204,11 +207,11 @@ class DatabaseHistoryStore(HistoryStore):
                     cur.execute(
                         f"""
                         INSERT INTO {self.messages_table}
-                        (session_id, timestamp, action, user_id, request_json, response_json, error)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        (session_id, timestamp, action, user_id, request_json, response_json, error, thinking_summary)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                         """,
-                        (session_id, timestamp, action, user_id, request_json, response_json, error),
+                        (session_id, timestamp, action, user_id, request_json, response_json, error, thinking_summary),
                     )
                     row = cur.fetchone()
                     item_id = int(row[0]) if row else None
@@ -216,10 +219,10 @@ class DatabaseHistoryStore(HistoryStore):
                     cur.execute(
                         f"""
                         INSERT INTO {self.messages_table}
-                        (session_id, timestamp, action, user_id, request_json, response_json, error)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        (session_id, timestamp, action, user_id, request_json, response_json, error, thinking_summary)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """,
-                        (session_id, timestamp, action, user_id, request_json, response_json, error),
+                        (session_id, timestamp, action, user_id, request_json, response_json, error, thinking_summary),
                     )
                     item_id = int(cur.lastrowid) if getattr(cur, "lastrowid", None) else None
             conn.commit()
@@ -240,6 +243,8 @@ class DatabaseHistoryStore(HistoryStore):
             item["response"] = response
         if error:
             item["error"] = error
+        if thinking_summary:
+            item["thinking_summary"] = thinking_summary
         return item
 
     def get(self, limit: int | None = None, action: str | None = None) -> List[Dict[str, Any]]:
@@ -260,7 +265,7 @@ class DatabaseHistoryStore(HistoryStore):
             params.append(lim)
 
         sql = (
-            f"SELECT id, timestamp, action, session_id, user_id, request_json, response_json, error "
+            f"SELECT id, timestamp, action, session_id, user_id, request_json, response_json, error, thinking_summary "
             f"FROM {self.messages_table}{where}{order_clause}"
         )
 
@@ -289,6 +294,8 @@ class DatabaseHistoryStore(HistoryStore):
                 item["response"] = response
             if row[7]:
                 item["error"] = str(row[7])
+            if row[8]:  # thinking_summary
+                item["thinking_summary"] = str(row[8])
             out.append(item)
 
         if limit is not None:
@@ -336,7 +343,7 @@ class DatabaseHistoryStore(HistoryStore):
                 
                 message_sql = f"""
                 SELECT m.id, m.timestamp, m.action, m.session_id, m.user_id, 
-                       m.request_json, m.response_json, m.error
+                       m.request_json, m.response_json, m.error, m.thinking_summary
                 FROM {self.messages_table} m
                 {message_where}
                 ORDER BY m.session_id, m.id ASC
@@ -367,6 +374,8 @@ class DatabaseHistoryStore(HistoryStore):
                 item["response"] = response
             if row[7]:
                 item["error"] = str(row[7])
+            if row[8]:  # thinking_summary
+                item["thinking_summary"] = str(row[8])
             
             if session_id not in sessions_dict:
                 sessions_dict[session_id] = []

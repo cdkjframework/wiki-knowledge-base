@@ -296,7 +296,8 @@ function loadSessionToChat(session) {
     const query = request.query || '新建聊天';
     const answer = response.answer || historyItem?.error || '无回答';
     const results = response.results || [];
-    const thinkingSummary = response.thinking_summary || '';
+    // thinking_summary 可能在顶层(数据库字段)或在 response 中(新消息)
+    const thinkingSummary = historyItem?.thinking_summary || response.thinking_summary || '';
     
     // 添加用户问题
     const userMsg = document.createElement('div');
@@ -451,6 +452,8 @@ function loadSessionToChat(session) {
     const query = request.query || '新建聊天';
     const answer = response.answer || historyItem?.error || '无回答';
     const results = response.results || [];
+    // thinking_summary 可能在顶层(数据库字段)或在 response 中(新消息)
+    const thinkingSummary = historyItem?.thinking_summary || response.thinking_summary || '';
     
     // 添加用户问题
     const userMsg = document.createElement('div');
@@ -504,6 +507,11 @@ function loadSessionToChat(session) {
       const actionsBar = createActionsBar(aiBubble, results);
       aiContent.appendChild(actionsBar);
     }
+
+    // 添加思考摘要
+    if (thinkingSummary) {
+      appendThinkingSummary(aiContent, thinkingSummary);
+    }
     
     aiMsg.appendChild(aiAvatar);
     aiMsg.appendChild(aiContent);
@@ -527,7 +535,8 @@ function loadHistoryToChat(historyItem) {
   const query = request.query || '新建聊天';
   const answer = response.answer || historyItem?.error || '无回答';
   const results = response.results || [];
-  const thinkingSummary = response.thinking_summary || '';
+  // thinking_summary 可能在顶层(数据库字段)或在 response 中(新消息)
+  const thinkingSummary = historyItem?.thinking_summary || response.thinking_summary || '';
   
   // 添加用户问题
   const userMsg = document.createElement('div');

@@ -11,6 +11,7 @@ class HistoryStore(ABC):
         request: Dict[str, Any],
         response: Dict[str, Any] | None = None,
         error: str | None = None,
+        thinking_summary: str | None = None,
     ) -> Dict[str, Any]:
         raise NotImplementedError
 

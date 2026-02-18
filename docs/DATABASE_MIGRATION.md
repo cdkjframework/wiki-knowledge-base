@@ -31,17 +31,18 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| id | BIGINT | 主键，自增 |
-| session_id | VARCHAR(128) | 会话ID，外键 |
+| id | BIGINT | 主键,自增 |
+| session_id | VARCHAR(128) | 会话ID,外键 |
 | timestamp | VARCHAR(64) | 消息时间戳 |
-| action | VARCHAR(64) | 操作类型（如：query） |
+| action | VARCHAR(64) | 操作类型(如:query) |
 | user_id | VARCHAR(128) | 用户ID |
-| request_json | TEXT/LONGTEXT | 请求数据（JSON） |
-| response_json | TEXT/LONGTEXT | 响应数据（JSON） |
+| request_json | TEXT/LONGTEXT | 请求数据(JSON) |
+| response_json | TEXT/LONGTEXT | 响应数据(JSON) |
 | error | TEXT/LONGTEXT | 错误信息 |
+| thinking_summary | TEXT/LONGTEXT | 深度思考摘要(v2.1新增) |
 | created_at | TIMESTAMP | 入库时间 |
 
-**索引：**
+**索引:**
 - PRIMARY KEY (id)
 - INDEX (session_id)
 - INDEX (action)
@@ -250,12 +251,85 @@ except:
 
 ## 更新日志
 
+### 2026-02-18 (v2.1)
+- ✅ 添加 thinking_summary 列用于存储深度思考摘要
+- ✅ 更新所有 append() 方法以支持 thinking_summary 参数
+- ✅ 创建 thinking_summary 字段迁移脚本 (add_thinking_summary_column.py)
+- ✅ 更新前端以正确显示历史记录中的思考摘要
+
 ### 2026-02-15
 - ✅ 实现主表+子表结构
 - ✅ 添加 delete_session API
 - ✅ 优化 get_by_sessions 查询性能
 - ✅ 创建数据迁移脚本
 - ✅ 更新前端删除逻辑
+
+## thinking_summary 字段迁移 (v2.1)
+
+### 概述
+从 v2.1 版本开始,系统支持深度思考功能,可在 `kb_session_messages` 表中存储 LLM 的思考摘要。
+
+### 新增字段
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| thinking_summary | TEXT/LONGTEXT | 存储 LLM 深度思考的摘要内容,可为 NULL |
+
+### 自动迁移
+
+使用提供的迁移脚本添加 thinking_summary 列:
+
+```bash
+# 运行迁移脚本
+python add_thinking_summary_column.py
+```
+
+脚本会自动:
+1. 检测数据库类型 (MySQL/PostgreSQL)
+2. 检查列是否已存在
+3. 如果不存在则添加 thinking_summary 列
+4. 显示迁移结果
+
+### 手动迁移
+
+如果需要手动添加字段:
+
+**MySQL:**
+```sql
+ALTER TABLE kb_session_messages 
+ADD COLUMN thinking_summary LONGTEXT NULL 
+AFTER error;
+```
+
+**PostgreSQL:**
+```sql
+ALTER TABLE kb_session_messages 
+ADD COLUMN thinking_summary TEXT NULL;
+```
+
+### 注意事项
+
+⚠️ **迁移说明:**
+- 该字段为可选字段 (NULL),已有记录不受影响
+- 新代码会自动创建包含该字段的表
+- 旧数据库升级需要运行迁移脚本
+- 不添加该字段不影响系统运行,但无法存储思考摘要
+
+### 验证迁移
+
+迁移完成后,可以验证字段是否添加成功:
+
+**MySQL:**
+```sql
+DESCRIBE kb_session_messages;
+```
+
+**PostgreSQL:**
+```sql
+\d kb_session_messages
+```
+
+应该能看到 `thinking_summary` 字段及其类型。
 
 ---
 

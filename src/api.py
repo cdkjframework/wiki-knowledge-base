@@ -61,6 +61,7 @@ class KnowledgeBaseApi:
         request: Dict[str, Any],
         response: Dict[str, Any] | None = None,
         error: str | None = None,
+        thinking_summary: str | None = None,
     ) -> Dict[str, Any]:
         return self._history_store.append(
             timestamp=self._now_iso(),
@@ -68,6 +69,7 @@ class KnowledgeBaseApi:
             request=request,
             response=response,
             error=error,
+            thinking_summary=thinking_summary,
         )
 
     def _chat_context_enabled(self) -> bool:
@@ -657,7 +659,7 @@ class KnowledgeBaseApi:
                 "thinking_summary": thinking_summary,
                 "messages": messages,
             }
-            self._append_history("query", req, resp)
+            self._append_history("query", req, resp, thinking_summary=thinking_summary)
             logger.info("API query completed: results=%s", len(result_items))
             return resp
         except Exception as exc:
@@ -1360,7 +1362,7 @@ class HttpApiServer:
                                     {"role": "assistant", "content": answer_text},
                                 ],
                             }
-                            api._append_history("query", data.get("req", {}), resp)
+                            api._append_history("query", data.get("req", {}), resp, thinking_summary=data.get("thinking_summary"))
                             self._send_sse(
                                 "done",
                                 {
@@ -1618,7 +1620,7 @@ class HttpApiServer:
                                     {"role": "assistant", "content": answer_text},
                                 ],
                             }
-                            api._append_history("query", data.get("req", {}), resp)
+                            api._append_history("query", data.get("req", {}), resp, thinking_summary=data.get("thinking_summary"))
                             self._send_sse(
                                 "done",
                                 {

@@ -17,6 +17,7 @@ class InMemoryHistoryStore(HistoryStore):
         request: Dict[str, Any],
         response: Dict[str, Any] | None = None,
         error: str | None = None,
+        thinking_summary: str | None = None,
     ) -> Dict[str, Any]:
         item: Dict[str, Any] = {
             "id": int(self._next_id),
@@ -29,6 +30,8 @@ class InMemoryHistoryStore(HistoryStore):
             item["response"] = response
         if error:
             item["error"] = error
+        if thinking_summary:
+            item["thinking_summary"] = thinking_summary
         self._items.append(item)
         return item
 

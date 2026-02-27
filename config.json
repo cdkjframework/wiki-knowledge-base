@@ -52,7 +52,7 @@
     },
     "chat": {
       "model_type": "qwen",
-      "model": "qwen/qwen3-vl-30b",
+      "model": "qwen/qwen3.5-35b-a3b",
       "use_lm_studio": true,
       "local_files_only": true,
       "temperature": 0.2,
@@ -62,7 +62,7 @@
       "model_type": "qwen",
       "base_url": "http://10.10.0.59:1234",
       "api_key": "sk-lm-DeMgb9du:f4MD7wrJO3xRsq9PI8Of",
-      "chat_model": "qwen/qwen3-vl-30b",
+      "chat_model": "qwen/qwen3.5-35b-a3b",
       "timeout": 300
     },
     "chunking": {

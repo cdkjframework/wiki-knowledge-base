@@ -783,6 +783,14 @@ async function runChat(event) {
       showToast('相关性阈值必须是数字', false);
       return;
     }
+    if (threshold <= 0) {
+      showToast('相关性阈值必须大于 0', false);
+      return;
+    }
+    if (threshold < 0.5) {
+      showToast('相关性阈值是距离阈值，建议 0.8-1.6；过小会过滤掉大部分结果', false);
+      return;
+    }
     body.relevance_threshold = threshold;
   }
 

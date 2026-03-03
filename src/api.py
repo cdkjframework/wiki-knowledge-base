@@ -110,6 +110,176 @@ class KnowledgeBaseApi:
         return cleaned, summary
 
     @staticmethod
+    def _split_thinking_sections(text: str) -> tuple[str, str | None, str | None]:
+        raw = str(text or "")
+        if not raw:
+            return "", None, None
+        answer_text, thinking_summary = KnowledgeBaseApi._extract_thinking_summary(raw)
+        think_start = "<think>"
+        think_end = "</think>"
+        start = answer_text.find(think_start)
+        if start < 0:
+            return answer_text.strip(), None, thinking_summary
+        end = answer_text.find(think_end, start + len(think_start))
+        if end < 0:
+            thinking = answer_text[start + len(think_start):].strip()
+            cleaned = answer_text[:start].strip()
+            return cleaned, (thinking or None), thinking_summary
+        thinking = answer_text[start + len(think_start): end].strip()
+        cleaned = (answer_text[:start] + answer_text[end + len(think_end):]).strip()
+        return cleaned, (thinking or None), thinking_summary
+
+    @staticmethod
+    def _init_stream_split_state() -> Dict[str, Any]:
+        return {
+            "mode": "answer",
+            "buffer": "",
+            "answer_parts": [],
+            "thinking_parts": [],
+            "summary_parts": [],
+            "seen_think_tag": False,
+        }
+
+    @staticmethod
+    def _feed_stream_split_state(
+        state: Dict[str, Any], chunk: str
+    ) -> List[tuple[str, str]]:
+        text = str(chunk or "")
+        if not text:
+            return []
+        think_open = "<think>"
+        think_close = "</think>"
+        summary_open = "<thinking_summary>"
+        summary_close = "</thinking_summary>"
+        state["buffer"] = str(state.get("buffer", "")) + text
+        events: List[tuple[str, str]] = []
+
+        while True:
+            buf = str(state.get("buffer", ""))
+            if not buf:
+                break
+            mode = str(state.get("mode", "answer"))
+            if mode == "answer":
+                idx_think = buf.find(think_open)
+                idx_summary = buf.find(summary_open)
+                idx = -1
+                target = ""
+                if idx_think >= 0 and (idx_summary < 0 or idx_think < idx_summary):
+                    idx = idx_think
+                    target = "think"
+                elif idx_summary >= 0:
+                    idx = idx_summary
+                    target = "summary"
+
+                if idx < 0:
+                    keep = max(len(think_open), len(summary_open)) - 1
+                    if len(buf) <= keep:
+                        break
+                    emit = buf[:-keep]
+                    state["buffer"] = buf[-keep:]
+                    if emit:
+                        state["answer_parts"].append(emit)
+                        events.append(("answer", emit))
+                    continue
+
+                if idx > 0:
+                    emit = buf[:idx]
+                    state["answer_parts"].append(emit)
+                    events.append(("answer", emit))
+                if target == "think":
+                    state["mode"] = "thinking"
+                    state["seen_think_tag"] = True
+                    state["buffer"] = buf[idx + len(think_open):]
+                else:
+                    state["mode"] = "summary"
+                    state["buffer"] = buf[idx + len(summary_open):]
+                continue
+
+            if mode == "thinking":
+                idx = buf.find(think_close)
+                if idx < 0:
+                    keep = len(think_close) - 1
+                    if len(buf) <= keep:
+                        break
+                    emit = buf[:-keep]
+                    state["buffer"] = buf[-keep:]
+                    if emit:
+                        state["thinking_parts"].append(emit)
+                        events.append(("thinking", emit))
+                    continue
+                if idx > 0:
+                    emit = buf[:idx]
+                    state["thinking_parts"].append(emit)
+                    events.append(("thinking", emit))
+                state["mode"] = "answer"
+                state["buffer"] = buf[idx + len(think_close):]
+                continue
+
+            if mode == "summary":
+                idx = buf.find(summary_close)
+                if idx < 0:
+                    keep = len(summary_close) - 1
+                    if len(buf) <= keep:
+                        break
+                    emit = buf[:-keep]
+                    state["buffer"] = buf[-keep:]
+                    if emit:
+                        state["summary_parts"].append(emit)
+                    continue
+                if idx > 0:
+                    state["summary_parts"].append(buf[:idx])
+                state["mode"] = "answer"
+                state["buffer"] = buf[idx + len(summary_close):]
+                continue
+
+        return events
+
+    @staticmethod
+    def _finalize_stream_split_state(state: Dict[str, Any]) -> tuple[str, str, str | None]:
+        buf = str(state.get("buffer", ""))
+        mode = str(state.get("mode", "answer"))
+        if buf:
+            if mode == "thinking":
+                state["thinking_parts"].append(buf)
+            elif mode == "summary":
+                state["summary_parts"].append(buf)
+            else:
+                state["answer_parts"].append(buf)
+        state["buffer"] = ""
+
+        answer = "".join(str(x) for x in state.get("answer_parts", []))
+        thinking = "".join(str(x) for x in state.get("thinking_parts", []))
+        summary = "".join(str(x) for x in state.get("summary_parts", [])).strip()
+        if not summary:
+            summary = None
+
+        # 清理潜在的残留标签文本
+        for tag in ("<think>", "</think>", "<thinking_summary>", "</thinking_summary>"):
+            answer = answer.replace(tag, "")
+            thinking = thinking.replace(tag, "")
+
+        # 回退规则：无 think 标签时尝试按“Final Answer/最终答案”分段
+        if not thinking and not bool(state.get("seen_think_tag", False)):
+            lower = answer.lower()
+            marker_candidates = [
+                ("final answer", lower.find("final answer")),
+                ("最终答案", answer.find("最终答案")),
+                ("【最终答案】", answer.find("【最终答案】")),
+            ]
+            marker_pos = -1
+            for _, pos in marker_candidates:
+                if pos >= 0 and (marker_pos < 0 or pos < marker_pos):
+                    marker_pos = pos
+            if marker_pos > 0:
+                prefix = answer[:marker_pos].strip()
+                suffix = answer[marker_pos:].lstrip(":： \n").strip()
+                if prefix:
+                    thinking = prefix
+                    answer = suffix
+
+        return answer.strip(), thinking.strip(), summary
+
+    @staticmethod
     def _split_text_by_lengths(text: str, lengths: Sequence[int]) -> List[str]:
         chunks: List[str] = []
         idx = 0
@@ -122,6 +292,15 @@ class KnowledgeBaseApi:
         if idx < len(text):
             chunks.append(text[idx:])
         return chunks
+
+    @staticmethod
+    def _log_preview(text: str, limit: int = 300) -> str:
+        if not text:
+            return ""
+        cleaned = str(text).replace("\r", "\\r").replace("\n", "\\n")
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[:limit] + "..."
 
     def _load_chat_context(self, user_id: str | None, session_id: str | None) -> List[Dict[str, Any]]:
         if not self._chat_context_enabled():
@@ -385,7 +564,7 @@ class KnowledgeBaseApi:
         if not context:
             return (
                 "You are a knowledge-base assistant.",
-                "No relevant knowledge-base content was retrieved.",
+                "未检索到相关知识库内容。",
             )
         system_prompt = (
             "You are a knowledge-base assistant. Answer only from the provided context. "
@@ -431,9 +610,9 @@ class KnowledgeBaseApi:
         # 根据 model_type 应用深度思考策略
         system_prompt = self._apply_deep_thinking_strategy(system_prompt, deep_think)
         
-        if user_prompt == "No relevant knowledge-base content was retrieved.":
+        if user_prompt == "未检索到相关知识库内容。":
             logger.warning("检索到的知识库内容为空")
-            return user_prompt
+            return user_prompt, None
         messages = [
             {"role": "system", "content": system_prompt},
         ]
@@ -457,11 +636,15 @@ class KnowledgeBaseApi:
         
         # 输出参数日志
         result = str(answer or "").strip()
-        result, thinking_summary = self._extract_thinking_summary(result)
+        result, _, tag_summary = self._split_thinking_sections(result)
+        _, thinking_summary = self._extract_thinking_summary(str(answer or ""))
+        if tag_summary and not thinking_summary:
+            thinking_summary = tag_summary
         logger.info("=== _answer_from_lm_studio 方法返回 ===")
         logger.info("输出参数:")
         logger.info("  answer: %s", result[:200] if len(result) > 200 else result)
         logger.info("  answer_length: %d", len(result))
+        logger.info("  answer_preview: %s", self._log_preview(result))
         if thinking_summary:
             logger.info("  thinking_summary_length: %d", len(thinking_summary))
         logger.info("=== 方法执行完成 ===")
@@ -500,9 +683,9 @@ class KnowledgeBaseApi:
         # 根据 model_type 应用深度思考策略
         system_prompt = self._apply_deep_thinking_strategy(system_prompt, deep_think)
         
-        if user_prompt == "No relevant knowledge-base content was retrieved.":
+        if user_prompt == "未检索到相关知识库内容。":
             logger.warning("检索到的知识库内容为空")
-            return [user_prompt]
+            return [user_prompt], None
         messages = [
             {"role": "system", "content": system_prompt},
         ]
@@ -524,27 +707,8 @@ class KnowledgeBaseApi:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        
-        # 转换为列表以便日志记录
-        stream_list = list(stream_result)
-        stream_text = "".join(str(chunk) for chunk in stream_list)
-        stream_text, thinking_summary = self._extract_thinking_summary(stream_text)
-        if thinking_summary:
-            lengths = [len(str(chunk)) for chunk in stream_list]
-            stream_list = self._split_text_by_lengths(stream_text, lengths)
-        logger.info("=== _answer_stream_from_lm_studio 方法返回 ===")
-        logger.info("输出参数:")
-        logger.info("  stream chunks count: %d", len(stream_list))
-        total_length = sum(len(str(chunk)) for chunk in stream_list)
-        logger.info("  total stream content length: %d", total_length)
-        for i, chunk in enumerate(stream_list[:5]):  # 只记录前5个块
-            logger.info("    [%d] %s", i, str(chunk)[:100])
-        if len(stream_list) > 5:
-            logger.info("    ... 以及 %d 个更多的块", len(stream_list) - 5)
-        if thinking_summary:
-            logger.info("  thinking_summary_length: %d", len(thinking_summary))
-        logger.info("=== 方法执行完成 ===")
-        return stream_list, thinking_summary
+        logger.info("流对象已返回，将由 SSE 实时转发到前端")
+        return stream_result, None
 
     @staticmethod
     def _distance_to_similarity(distance: float) -> float:
@@ -552,6 +716,32 @@ class KnowledgeBaseApi:
         if dist < 0:
             dist = 0.0
         return 1.0 / (1.0 + dist)
+
+    def _search_with_threshold_fallback(
+        self,
+        query: str,
+        k: int,
+        relevance_threshold: float | None,
+    ) -> tuple[List[tuple[str, str, float]], float | None, bool]:
+        effective_threshold = (
+            None if relevance_threshold is None else float(relevance_threshold)
+        )
+        raw = self.kb.search(query=query, k=k, relevance_threshold=effective_threshold)
+        threshold_relaxed = False
+        if effective_threshold is not None and not raw:
+            query_preview = query[:80] if len(query) > 80 else query
+            logger.warning(
+                "阈值检索返回空结果，回退为无阈值检索: query=%s threshold=%s",
+                query_preview,
+                effective_threshold,
+            )
+            fallback = self.kb.search(query=query, k=k, relevance_threshold=None)
+            if fallback:
+                raw = fallback
+                threshold_relaxed = True
+                effective_threshold = None
+                logger.warning("阈值回退生效: fallback_results=%d", len(raw))
+        return list(raw), effective_threshold, threshold_relaxed
 
     def query(
         self,
@@ -597,7 +787,11 @@ class KnowledgeBaseApi:
         }
         try:
             logger.debug("开始执行知识库检索...")
-            raw = self.kb.search(query=query, k=k, relevance_threshold=relevance_threshold)
+            raw, effective_threshold, threshold_relaxed = self._search_with_threshold_fallback(
+                query=query,
+                k=k,
+                relevance_threshold=relevance_threshold,
+            )
             logger.debug("检索到 %d 个原始结果", len(raw))
             
             ranked_results = []
@@ -657,6 +851,8 @@ class KnowledgeBaseApi:
                 "session_id": session_id,
                 "user_id": user_id,
                 "thinking_summary": thinking_summary,
+                "relevance_threshold": effective_threshold,
+                "threshold_relaxed": bool(threshold_relaxed),
                 "messages": messages,
             }
             self._append_history("query", req, resp, thinking_summary=thinking_summary)
@@ -697,7 +893,11 @@ class KnowledgeBaseApi:
             "session_id": session_id,
             "deep_think": bool(deep_think),
         }
-        raw = self.kb.search(query=query, k=k, relevance_threshold=relevance_threshold)
+        raw, effective_threshold, threshold_relaxed = self._search_with_threshold_fallback(
+            query=query,
+            k=k,
+            relevance_threshold=relevance_threshold,
+        )
         ranked_results = []
         result_items = []
         for fn, text, distance_raw in raw:
@@ -736,6 +936,8 @@ class KnowledgeBaseApi:
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "thinking_summary": thinking_summary,
+            "relevance_threshold": effective_threshold,
+            "threshold_relaxed": bool(threshold_relaxed),
         }
 
     def add_document(self, filename: str, text: str) -> Dict[str, Any]:
@@ -1337,16 +1539,54 @@ class HttpApiServer:
                                 },
                             )
                             finish_reason = "stop"
+                            answer_text = ""
+                            thinking_text = ""
+                            thinking_summary = data.get("thinking_summary")
                             if generate_answer:
+                                split_state = api._init_stream_split_state()
+                                answer_parts: List[str] = []
+                                thinking_parts: List[str] = []
                                 for piece in data.get("stream", []):
                                     text = str(piece or "")
                                     if not text:
                                         continue
-                                    answer_parts.append(text)
-                                    self._send_sse("delta", {"delta": text})
+                                    routed = api._feed_stream_split_state(split_state, text)
+                                    for channel, delta_piece in routed:
+                                        if not delta_piece:
+                                            continue
+                                        if channel == "thinking":
+                                            thinking_parts.append(delta_piece)
+                                            self._send_sse("thinking_delta", {"delta": delta_piece})
+                                        else:
+                                            answer_parts.append(delta_piece)
+                                            self._send_sse("delta", {"delta": delta_piece})
+                                final_answer, final_thinking, parsed_summary = api._finalize_stream_split_state(split_state)
+                                sent_answer = "".join(answer_parts)
+                                sent_thinking = "".join(thinking_parts)
+                                if final_thinking and len(final_thinking) > len(sent_thinking):
+                                    tail = final_thinking[len(sent_thinking):]
+                                    if tail:
+                                        thinking_parts.append(tail)
+                                        self._send_sse("thinking_delta", {"delta": tail})
+                                if final_answer and len(final_answer) > len(sent_answer):
+                                    tail = final_answer[len(sent_answer):]
+                                    if tail:
+                                        answer_parts.append(tail)
+                                        self._send_sse("delta", {"delta": tail})
+                                answer_text = "".join(answer_parts)
+                                thinking_text = "".join(thinking_parts).strip()
+                                if parsed_summary and not thinking_summary:
+                                    thinking_summary = parsed_summary
                             else:
+                                answer_parts: List[str] = []
                                 finish_reason = "not_requested"
-                            answer_text = "".join(answer_parts)
+                                thinking_summary = None
+                            logger.info(
+                                "SSE stream completed: chunks=%d chars=%d finish_reason=%s",
+                                len(answer_parts),
+                                len(answer_text),
+                                finish_reason,
+                            )
                             resp = {
                                 "answer": answer_text,
                                 "finish_reason": finish_reason,
@@ -1354,7 +1594,8 @@ class HttpApiServer:
                                 "results": data.get("results", []),
                                 "session_id": session_id,
                                 "user_id": user_id,
-                                "thinking_summary": data.get("thinking_summary"),
+                                "thinking": thinking_text,
+                                "thinking_summary": thinking_summary,
                                 "messages": [
                                     {"role": "system", "content": data.get("system_prompt", "")},
                                     *data.get("history_messages", []),
@@ -1362,12 +1603,13 @@ class HttpApiServer:
                                     {"role": "assistant", "content": answer_text},
                                 ],
                             }
-                            api._append_history("query", data.get("req", {}), resp, thinking_summary=data.get("thinking_summary"))
+                            api._append_history("query", data.get("req", {}), resp, thinking_summary=thinking_summary)
                             self._send_sse(
                                 "done",
                                 {
                                     "finish_reason": finish_reason,
-                                    "thinking_summary": data.get("thinking_summary"),
+                                    "thinking": thinking_text,
+                                    "thinking_summary": thinking_summary,
                                 },
                             )
                             return
@@ -1595,16 +1837,54 @@ class HttpApiServer:
                                 },
                             )
                             finish_reason = "stop"
+                            answer_text = ""
+                            thinking_text = ""
+                            thinking_summary = data.get("thinking_summary")
                             if generate_answer:
+                                split_state = api._init_stream_split_state()
+                                answer_parts: List[str] = []
+                                thinking_parts: List[str] = []
                                 for piece in data.get("stream", []):
                                     text = str(piece or "")
                                     if not text:
                                         continue
-                                    answer_parts.append(text)
-                                    self._send_sse("delta", {"delta": text})
+                                    routed = api._feed_stream_split_state(split_state, text)
+                                    for channel, delta_piece in routed:
+                                        if not delta_piece:
+                                            continue
+                                        if channel == "thinking":
+                                            thinking_parts.append(delta_piece)
+                                            self._send_sse("thinking_delta", {"delta": delta_piece})
+                                        else:
+                                            answer_parts.append(delta_piece)
+                                            self._send_sse("delta", {"delta": delta_piece})
+                                final_answer, final_thinking, parsed_summary = api._finalize_stream_split_state(split_state)
+                                sent_answer = "".join(answer_parts)
+                                sent_thinking = "".join(thinking_parts)
+                                if final_thinking and len(final_thinking) > len(sent_thinking):
+                                    tail = final_thinking[len(sent_thinking):]
+                                    if tail:
+                                        thinking_parts.append(tail)
+                                        self._send_sse("thinking_delta", {"delta": tail})
+                                if final_answer and len(final_answer) > len(sent_answer):
+                                    tail = final_answer[len(sent_answer):]
+                                    if tail:
+                                        answer_parts.append(tail)
+                                        self._send_sse("delta", {"delta": tail})
+                                answer_text = "".join(answer_parts)
+                                thinking_text = "".join(thinking_parts).strip()
+                                if parsed_summary and not thinking_summary:
+                                    thinking_summary = parsed_summary
                             else:
+                                answer_parts: List[str] = []
                                 finish_reason = "not_requested"
-                            answer_text = "".join(answer_parts)
+                                thinking_summary = None
+                            logger.info(
+                                "SSE stream completed: chunks=%d chars=%d finish_reason=%s",
+                                len(answer_parts),
+                                len(answer_text),
+                                finish_reason,
+                            )
                             resp = {
                                 "answer": answer_text,
                                 "finish_reason": finish_reason,
@@ -1612,7 +1892,8 @@ class HttpApiServer:
                                 "results": data.get("results", []),
                                 "session_id": session_id,
                                 "user_id": user_id,
-                                "thinking_summary": data.get("thinking_summary"),
+                                "thinking": thinking_text,
+                                "thinking_summary": thinking_summary,
                                 "messages": [
                                     {"role": "system", "content": data.get("system_prompt", "")},
                                     *data.get("history_messages", []),
@@ -1620,12 +1901,13 @@ class HttpApiServer:
                                     {"role": "assistant", "content": answer_text},
                                 ],
                             }
-                            api._append_history("query", data.get("req", {}), resp, thinking_summary=data.get("thinking_summary"))
+                            api._append_history("query", data.get("req", {}), resp, thinking_summary=thinking_summary)
                             self._send_sse(
                                 "done",
                                 {
                                     "finish_reason": finish_reason,
-                                    "thinking_summary": data.get("thinking_summary"),
+                                    "thinking": thinking_text,
+                                    "thinking_summary": thinking_summary,
                                 },
                             )
                             return
@@ -1768,6 +2050,3 @@ class HttpApiServer:
     def shutdown(self) -> None:
         self._server.shutdown()
         self._server.server_close()
-
-
-

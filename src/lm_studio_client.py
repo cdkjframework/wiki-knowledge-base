@@ -132,9 +132,13 @@ class LmStudioClient:
             return ""
         message = first.get("message")
         if isinstance(message, dict):
-            text = self._content_to_text(message.get("content"))
-            if text:
-                return text
+            for key in ("content", "reasoning_content", "reasoning", "text"):
+                text = self._content_to_text(message.get(key))
+                if text:
+                    return text
+            text_raw = message.get("text")
+            if isinstance(text_raw, str) and text_raw:
+                return text_raw
         text = first.get("text")
         if isinstance(text, str):
             return text
@@ -149,14 +153,22 @@ class LmStudioClient:
             return ""
         delta = first.get("delta")
         if isinstance(delta, dict):
-            text = self._content_to_text(delta.get("content"))
-            if text:
-                return text
+            for key in ("content", "reasoning_content", "reasoning", "text"):
+                text = self._content_to_text(delta.get(key))
+                if text:
+                    return text
+            text_raw = delta.get("text")
+            if isinstance(text_raw, str) and text_raw:
+                return text_raw
         message = first.get("message")
         if isinstance(message, dict):
-            text = self._content_to_text(message.get("content"))
-            if text:
-                return text
+            for key in ("content", "reasoning_content", "reasoning", "text"):
+                text = self._content_to_text(message.get(key))
+                if text:
+                    return text
+            text_raw = message.get("text")
+            if isinstance(text_raw, str) and text_raw:
+                return text_raw
         text = first.get("text")
         if isinstance(text, str):
             return text

@@ -91,6 +91,15 @@ class ChatModel:
             return text
         return text[:limit] + "..."
 
+    @staticmethod
+    def _preview_text(text: str, limit: int = 300) -> str:
+        if not text:
+            return ""
+        cleaned = str(text).replace("\r", "\\r").replace("\n", "\\n")
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[:limit] + "..."
+
     def _summarize_messages(self, messages: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         count = len(messages)
         last_role = ""
@@ -239,6 +248,7 @@ class ChatModel:
                 max_tokens=max_tokens,
             )
             logger.info("Chat output: model=%s chars=%s", model, len(result))
+            logger.info("Chat output preview: model=%s preview=%s", model, self._preview_text(result))
             return result
         logger.info("Chat inference via local model: model=%s", model)
         result = self._local_chat_once(
@@ -248,6 +258,7 @@ class ChatModel:
             max_tokens=max_tokens,
         )
         logger.info("Chat output: model=%s chars=%s", model, len(result))
+        logger.info("Chat output preview: model=%s preview=%s", model, self._preview_text(result))
         return result
 
     def chat_stream(
@@ -273,6 +284,9 @@ class ChatModel:
             def _logged_stream() -> Sequence[str]:
                 total = 0
                 chunks = 0
+                preview_parts: List[str] = []
+                preview_len = 0
+                preview_limit = 300
                 for piece in self._lm_client.chat_stream(
                     messages=messages,
                     model=model,
@@ -283,8 +297,21 @@ class ChatModel:
                     if text:
                         total += len(text)
                         chunks += 1
+                        if preview_len < preview_limit:
+                            remain = preview_limit - preview_len
+                            snippet = text[:remain]
+                            if snippet:
+                                preview_parts.append(snippet)
+                                preview_len += len(snippet)
                     yield piece
-                logger.info("Chat stream output: model=%s chunks=%s chars=%s", model, chunks, total)
+                preview = "".join(preview_parts)
+                logger.info(
+                    "Chat stream output: model=%s chunks=%s chars=%s preview=%s",
+                    model,
+                    chunks,
+                    total,
+                    self._preview_text(preview),
+                )
 
             return _logged_stream()
         logger.info("Chat stream via local model: model=%s", model)
@@ -294,5 +321,10 @@ class ChatModel:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        logger.info("Chat stream output: model=%s chunks=1 chars=%s", model, len(text))
+        logger.info(
+            "Chat stream output: model=%s chunks=1 chars=%s preview=%s",
+            model,
+            len(text),
+            self._preview_text(text),
+        )
         return [text]

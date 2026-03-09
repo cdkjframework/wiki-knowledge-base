@@ -19,74 +19,70 @@
         </div>
       </div>
       <nav class="menu">
-        <button class="menu-item active" data-tab="chat">聊天</button>
-        <button class="menu-item" data-tab="kb">知识库管理</button>
-        <button class="menu-item" data-tab="model">模型管理</button>
+        <a class="menu-item active" href="/ui/">聊天</a>
+        <a class="menu-item" href="/ui/kb.html">知识库管理</a>
+        <a class="menu-item" href="/ui/model.html">模型管理</a>
       </nav>
       <a class="doc-link" href="/api-docs" target="_blank" rel="noreferrer">查看 API 文档</a>
     </aside>
 
-    <section class="content">
+    <div class="content">
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-      <section id="panel-chat" class="panel active">
-        <header class="panel-head">
-          <h2>聊天</h2>
-          <p>问答基于知识库检索，可选直接生成回答。</p>
-        </header>
+      <header class="panel-head">
+        <h2>聊天</h2>
+        <p>问答基于知识库检索，可选直接生成回答。</p>
+      </header>
 
-        <div class="chat-layout">
+      <div class="chat-layout">
           <aside class="card chat-history">
+            <button id="btn-new-session" class="btn-new-session" type="button">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+              <span>新建对话</span>
+            </button>
+            
             <div class="chat-history-head">
               <h3>历史记录</h3>
-              <button id="btn-refresh-history" class="btn">刷新</button>
+              <button id="btn-clear-history" class="btn-icon" type="button" title="清空历史">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+              </button>
             </div>
+            
             <ul id="history-list" class="history-list">
-              <li class="history-item">暂无历史</li>
+              <li class="history-item history-empty">暂无历史</li>
             </ul>
+            
+            <div class="history-footer">
+              仅显示最近 20 条对话
+            </div>
           </aside>
 
           <div class="chat-main">
             <div class="card chat-settings">
-              <details>
+              <details open>
                 <summary><strong>⚙️ 高级设置</strong></summary>
                 <div class="settings-grid">
                   <label class="field size-small">
                     <span>用户ID</span>
                     <input id="chat-user-id" type="text" placeholder="user-001" value="user-001" required>
                   </label>
-                  <label class="field size-small">
-                    <span>Session ID</span>
-                    <div class="session-row">
-                      <input id="chat-session-id" type="text" placeholder="由系统生成" readonly>
-                      <button id="btn-reset-session" class="btn size-small" type="button">新会话</button>
-                    </div>
-                  </label>
-                  <label class="field size-small">
-                    <span>返回条数 k</span>
-                    <input id="chat-k" type="number" min="1" value="2">
-                  </label>
-                  <label class="field size-small">
-                    <span>相关性阈值</span>
-                    <input id="chat-threshold" type="number" step="0.01" min="0.5" placeholder="可选，建议 0.8-1.6">
-                  </label>
-                  <label class="field checkbox-field">
-                    <input id="chat-generate" type="checkbox" checked>
-                    <span>生成答案</span>
-                  </label>
-                  <label class="field size-small">
-                    <span>模型配置</span>
-                    <select id="chat-model-config">
-                      <option value="">-- 自动/内置模型 --</option>
-                    </select>
-                  </label>
-                  <label class="field checkbox-field">
-                    <input id="chat-use-default-model" type="checkbox">
-                    <span>使用默认模型配置</span>
-                  </label>
                 </div>
               </details>
             </div>
+            
+            <!-- 隐藏的配置字段,由后台和其他页面管理 -->
+            <input id="chat-session-id" type="hidden">
+            <input id="chat-k" type="hidden" value="2">
+            <input id="chat-threshold" type="hidden" value="">
+            <input id="chat-generate" type="hidden" value="true">
+            <select id="chat-model-config" style="display: none;">
+              <option value="">-- 自动/内置模型 --</option>
+            </select>
+            <input id="chat-use-default-model" type="hidden" value="false">
 
             <div class="card chat-box">
               <div id="chat-messages" class="chat-messages">
@@ -121,10 +117,25 @@
               </button>
             </form>
           </div>
-        </div>
-      </section>
 
-      <section id="panel-kb" class="panel">
+          <aside class="card chat-sources">
+            <div class="chat-sources-head">
+              <h3 id="sources-title">知识来源</h3>
+            </div>
+            <div id="sources-list" class="sources-list">
+              <div class="sources-empty">发起提问后将在这里展示命中文档</div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js" defer></script>
+  <script src="/ui/app.js" defer></script>
+</body>
+</html>
         <header class="panel-head">
           <h2>知识库管理</h2>
           <p>文档增删、上传、批量上传与统计查看。</p>
@@ -135,7 +146,25 @@
           <button id="btn-refresh-stats" class="btn size-small">刷新统计</button>
           <button id="btn-clear-kb" class="btn danger size-small">清空知识库</button>
         </div>
-
+        <div class="card">
+          <h3>📊 检索设置</h3>
+          <p style="color: var(--muted); margin: 8px 0 16px;">配置知识库检索参数,影响所有查询请求</p>
+          <div class="settings-grid">
+            <label class="field size-small">
+              <span>返回条数 (k)</span>
+              <input id="kb-k" type="number" min="1" max="20" value="2">
+              <small style="color: var(--muted); font-size: 0.85rem; display: block; margin-top: 4px;">控制检索返回的文档数量</small>
+            </label>
+            <label class="field size-small">
+              <span>相关性阈值</span>
+              <input id="kb-threshold" type="number" step="0.01" min="0.5" max="3.0" placeholder="留空则不过滤">
+              <small style="color: var(--muted); font-size: 0.85rem; display: block; margin-top: 4px;">建议范围 0.8-1.6,越小越严格</small>
+            </label>
+          </div>
+          <div class="actions" style="margin-top: 16px;">
+            <button id="btn-save-retrieval-settings" class="btn primary size-small">💾 保存检索设置</button>
+          </div>
+        </div>
         <div class="card" id="stats-box">
           <h3>统计信息</h3>
           <pre id="stats-output" class="mono">点击“刷新统计”加载数据</pre>

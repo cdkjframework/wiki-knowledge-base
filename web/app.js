@@ -2,6 +2,7 @@
 const panels = {
   chat: document.getElementById('panel-chat'),
   kb: document.getElementById('panel-kb'),
+  model: document.getElementById('panel-model'),
 };
 const toast = document.getElementById('toast');
 const chunkState = {
@@ -10,6 +11,7 @@ const chunkState = {
   total: 0,
 };
 let documentsList = [];
+let modelConfigsList = [];
 const chatUserInput = document.getElementById('chat-user-id');
 const chatSessionInput = document.getElementById('chat-session-id');
 const resetSessionBtn = document.getElementById('btn-reset-session');
@@ -770,6 +772,13 @@ async function runChat(event) {
     deep_think: deepThink,
     user_id: userId,
   };
+  const selectedModelConfigId = document.getElementById('chat-model-config')?.value?.trim() || '';
+  const useDefaultModelConfig = Boolean(document.getElementById('chat-use-default-model')?.checked);
+  if (useDefaultModelConfig) {
+    body.use_default_model_config = true;
+  } else if (selectedModelConfigId) {
+    body.model_config_id = Number(selectedModelConfigId);
+  }
   let sessionId = chatSessionInput.value.trim();
   if (!sessionId) {
     sessionId = await ensureSessionId(userId);
@@ -1024,6 +1033,233 @@ async function ensureSessionId(userId) {
     chatSessionInput.value = sessionId;
   }
   return sessionId;
+}
+
+function resetModelForm() {
+  const form = document.getElementById('model-config-form');
+  if (!form) return;
+  form.reset();
+  document.getElementById('model-config-id').value = '';
+  document.getElementById('model-temperature').value = '0.7';
+  document.getElementById('model-timeout').value = '30';
+  document.getElementById('model-is-active').checked = true;
+  document.getElementById('model-is-default').checked = false;
+}
+
+function fillModelForm(config) {
+  if (!config) return;
+  document.getElementById('model-config-id').value = String(config.id ?? '');
+  document.getElementById('model-name').value = String(config.name || '');
+  document.getElementById('model-provider').value = String(config.provider || '');
+  document.getElementById('model-base-url').value = String(config.base_url || '');
+  document.getElementById('model-model-name').value = String(config.model_name || '');
+  document.getElementById('model-api-key').value = '';
+  document.getElementById('model-temperature').value = config.temperature != null ? String(config.temperature) : '0.7';
+  document.getElementById('model-max-tokens').value = config.max_tokens != null ? String(config.max_tokens) : '';
+  document.getElementById('model-timeout').value = config.timeout != null ? String(config.timeout) : '30';
+  document.getElementById('model-description').value = String(config.description || '');
+  document.getElementById('model-is-active').checked = Boolean(config.is_active);
+  document.getElementById('model-is-default').checked = Boolean(config.is_default);
+}
+
+function renderProviderOptions(providers) {
+  const providerSelect = document.getElementById('model-provider');
+  if (!providerSelect) return;
+  providerSelect.innerHTML = '';
+  if (!Array.isArray(providers) || providers.length === 0) {
+    providerSelect.innerHTML = '<option value="">-- 无可用 provider --</option>';
+    return;
+  }
+  for (const item of providers) {
+    const option = document.createElement('option');
+    option.value = String(item.name || '');
+    option.textContent = String(item.name || '');
+    providerSelect.appendChild(option);
+  }
+}
+
+function updateChatModelSelect(configs) {
+  const select = document.getElementById('chat-model-config');
+  if (!select) return;
+  const prev = select.value;
+  select.innerHTML = '<option value="">-- 自动/内置模型 --</option>';
+  if (Array.isArray(configs)) {
+    for (const cfg of configs) {
+      const option = document.createElement('option');
+      option.value = String(cfg.id ?? '');
+      const defaultMark = cfg.is_default ? ' [默认]' : '';
+      const activeMark = cfg.is_active ? '' : ' [停用]';
+      option.textContent = `${String(cfg.name || '-')}${defaultMark}${activeMark}`;
+      select.appendChild(option);
+    }
+  }
+  if (prev && Array.from(select.options).some((opt) => opt.value === prev)) {
+    select.value = prev;
+  }
+}
+
+function renderModelConfigsTable(configs) {
+  const tbody = document.getElementById('model-configs-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!Array.isArray(configs) || configs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7">暂无模型配置</td></tr>';
+    return;
+  }
+
+  for (const cfg of configs) {
+    const tr = document.createElement('tr');
+    const activeText = cfg.is_active ? '启用' : '停用';
+    const defaultText = cfg.is_default ? '是' : '否';
+    tr.innerHTML = `
+      <td>${Number(cfg.id || 0)}</td>
+      <td>${String(cfg.name || '-')}</td>
+      <td>${String(cfg.provider || '-')}</td>
+      <td>${String(cfg.model_name || '-')}</td>
+      <td>${activeText}</td>
+      <td>${defaultText}</td>
+      <td></td>
+    `;
+
+    const actionCell = tr.lastElementChild;
+    const editBtn = document.createElement('button');
+    editBtn.className = 'chunks-action-btn';
+    editBtn.textContent = '编辑';
+    editBtn.addEventListener('click', () => {
+      fillModelForm(cfg);
+      showToast(`已载入配置：${cfg.name}`);
+    });
+
+    const testBtn = document.createElement('button');
+    testBtn.className = 'chunks-action-btn';
+    testBtn.textContent = '测试';
+    testBtn.addEventListener('click', () => {
+      testModelConfig(cfg.id).catch((err) => showToast(err.message, false));
+    });
+
+    const defaultBtn = document.createElement('button');
+    defaultBtn.className = 'chunks-action-btn';
+    defaultBtn.textContent = '设默认';
+    defaultBtn.disabled = Boolean(cfg.is_default);
+    defaultBtn.addEventListener('click', () => {
+      setDefaultModelConfig(cfg.id).catch((err) => showToast(err.message, false));
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'chunks-action-btn danger';
+    deleteBtn.textContent = '删除';
+    deleteBtn.addEventListener('click', () => {
+      const ok = window.confirm(`确定删除模型配置 ${cfg.name} 吗？`);
+      if (!ok) return;
+      deleteModelConfig(cfg.id).catch((err) => showToast(err.message, false));
+    });
+
+    actionCell.style.display = 'flex';
+    actionCell.style.gap = '6px';
+    actionCell.style.flexWrap = 'wrap';
+    actionCell.appendChild(editBtn);
+    actionCell.appendChild(testBtn);
+    actionCell.appendChild(defaultBtn);
+    actionCell.appendChild(deleteBtn);
+    tbody.appendChild(tr);
+  }
+}
+
+async function refreshModelProviders() {
+  const data = await apiRequest('/model/providers');
+  renderProviderOptions(data.providers || []);
+}
+
+async function refreshModelConfigs() {
+  const data = await apiRequest('/model/configs');
+  modelConfigsList = Array.isArray(data.configs) ? data.configs : [];
+  renderModelConfigsTable(modelConfigsList);
+  updateChatModelSelect(modelConfigsList);
+  return modelConfigsList;
+}
+
+async function submitModelConfig(event) {
+  event.preventDefault();
+  const idRaw = document.getElementById('model-config-id').value.trim();
+  const name = document.getElementById('model-name').value.trim();
+  const provider = document.getElementById('model-provider').value.trim();
+  const baseUrl = document.getElementById('model-base-url').value.trim();
+  const modelName = document.getElementById('model-model-name').value.trim();
+  const apiKey = document.getElementById('model-api-key').value.trim();
+  const temperatureRaw = document.getElementById('model-temperature').value.trim();
+  const maxTokensRaw = document.getElementById('model-max-tokens').value.trim();
+  const timeoutRaw = document.getElementById('model-timeout').value.trim();
+  const description = document.getElementById('model-description').value.trim();
+  const isActive = document.getElementById('model-is-active').checked;
+  const isDefault = document.getElementById('model-is-default').checked;
+
+  if (!name || !provider || !baseUrl || !modelName) {
+    showToast('名称/Provider/Base URL/Model Name 不能为空', false);
+    return;
+  }
+
+  const body = {
+    name,
+    provider,
+    base_url: baseUrl,
+    model_name: modelName,
+    temperature: temperatureRaw ? Number(temperatureRaw) : 0.7,
+    timeout: timeoutRaw ? Number(timeoutRaw) : 30,
+    is_active: isActive,
+    is_default: isDefault,
+    description: description || null,
+  };
+  if (apiKey) body.api_key = apiKey;
+  if (maxTokensRaw) body.max_tokens = Number(maxTokensRaw);
+
+  if (idRaw) {
+    await apiRequest(`/model/config/${encodeURIComponent(idRaw)}`, {
+      method: 'PUT',
+      body,
+    });
+    showToast('模型配置已更新');
+  } else {
+    await apiRequest('/model/config', {
+      method: 'POST',
+      body,
+    });
+    showToast('模型配置已新增');
+  }
+
+  await refreshModelConfigs();
+  resetModelForm();
+}
+
+async function deleteModelConfig(id) {
+  await apiRequest(`/model/config/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  showToast('模型配置已删除');
+  await refreshModelConfigs();
+}
+
+async function setDefaultModelConfig(id) {
+  await apiRequest(`/model/config/${encodeURIComponent(id)}/default`, { method: 'POST', body: {} });
+  showToast('已设置默认模型配置');
+  await refreshModelConfigs();
+}
+
+async function testModelConfig(id) {
+  const data = await apiRequest('/model/config/test', {
+    method: 'POST',
+    body: { config_id: Number(id) },
+  });
+  if (data.ok) {
+    showToast(`测试成功：${String(data.provider || '')}`);
+  } else {
+    showToast(String(data.error || '测试失败'), false);
+  }
+}
+
+async function bootstrapModelConfigs() {
+  const data = await apiRequest('/model/config/bootstrap', { method: 'POST', body: {} });
+  const created = Number(data.count_created || 0);
+  const skipped = Number(data.count_skipped || 0);
+  showToast(`初始化完成：新增${created}，跳过${skipped}`);
+  await refreshModelConfigs();
 }
 
 function renderDocsTable(documents) {
@@ -1362,6 +1598,22 @@ function bindEvents() {
   document.getElementById('btn-rebuild-chunks').addEventListener('click', () => {
     rebuildChunks().catch((err) => showToast(err.message, false));
   });
+  document.getElementById('model-config-form').addEventListener('submit', (e) => {
+    submitModelConfig(e).catch((err) => showToast(err.message, false));
+  });
+  document.getElementById('btn-reset-model-form').addEventListener('click', resetModelForm);
+  document.getElementById('btn-refresh-model-configs').addEventListener('click', () => {
+    refreshModelConfigs().catch((err) => showToast(err.message, false));
+  });
+  document.getElementById('btn-bootstrap-model-configs').addEventListener('click', () => {
+    bootstrapModelConfigs().catch((err) => showToast(err.message, false));
+  });
+  document.getElementById('chat-use-default-model').addEventListener('change', (e) => {
+    const select = document.getElementById('chat-model-config');
+    if (select) {
+      select.disabled = Boolean(e.target.checked);
+    }
+  });
 
   resetSessionBtn.addEventListener('click', () => {
     const userId = chatUserInput.value.trim();
@@ -1430,6 +1682,9 @@ async function bootstrap() {
       await ensureSessionId(userId);
     }
     await Promise.all([refreshDocuments(), refreshStats(), refreshHistory(), refreshChunks()]);
+    await refreshModelProviders().catch(() => {});
+    await refreshModelConfigs().catch(() => {});
+    resetModelForm();
   } catch (error) {
     showToast(error.message || '初始化失败', false);
   }

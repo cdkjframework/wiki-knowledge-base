@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = PROJECT_ROOT / "web"
 DOCS_DIR = PROJECT_ROOT / "docs"
+ASSETS_DIR = PROJECT_ROOT / "assets"
 
 
 class KnowledgeBaseApi:
@@ -1555,6 +1556,12 @@ class HttpApiServer:
                     if path.startswith("/ui/"):
                         rel = path[len("/ui/") :]
                         if self._serve_static(WEB_DIR, rel):
+                            return
+                        self._not_found()
+                        return
+                    if path.startswith("/assets/"):
+                        rel = path[len("/assets/") :]
+                        if self._serve_static(ASSETS_DIR, rel):
                             return
                         self._not_found()
                         return

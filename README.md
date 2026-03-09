@@ -21,6 +21,7 @@
 - 支持 `user_id` 与 `session_id` 的上下文会话。
 - 文档导入（单文件、批量上传、目录重建）。
 - 分片管理（列表、编辑、删除、重建）。
+- **✨ 多模型支持**：兼容 OpenAI、DeepSeek、Qwen、Doubao、xAI、Gemini、Kimi 等主流 LLM API。
 
 ## 架构
 
@@ -96,11 +97,30 @@ config.json 关键字段：
 - `knowledge_base.embedding`：Embedding 模型及设备设置。
 - `knowledge_base.rerank`：Reranker 模型及推理设置。
 - `knowledge_base.chat`：对话模型设置（温度/最大 token）。
-- `knowledge_base.lm_studio`：LM Studio 连接与超时配置以及模型设置。
+- `knowledge_base.lm_studio`：Universal LLM 连接配置（支持多种 AI 模型服务）。
 - `knowledge_base.chunking`：分片大小与重叠。
 - `knowledge_base.retrieval`：召回/重排权重与候选数。
 - `chat_context.enabled`：是否启用上下文。
 - `chat_context.max_turns`：上下文最大轮数。
+
+## 🤖 支持的 AI 模型
+
+本项目通过 `UniversalLLMClient` 支持多种主流 AI 模型服务：
+
+| 提供商 | 模型示例 | 配置示例 |
+|--------|---------|---------|
+| **OpenAI** | GPT-4, GPT-3.5-Turbo | `base_url: https://api.openai.com/v1` |
+| **DeepSeek** | deepseek-chat, deepseek-coder | `base_url: https://api.deepseek.com/v1` |
+| **Qwen（通义千问）** | qwen-max, qwen-plus, qwen-turbo | `base_url: https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| **Doubao（豆包）** | doubao-pro-32k | `base_url: https://ark.cn-beijing.volces.com/api/v3` |
+| **xAI** | grok-beta | `base_url: https://api.x.ai/v1` |
+| **Google Gemini** | gemini-pro | `base_url: https://generativelanguage.googleapis.com/v1beta` |
+| **Kimi（月之暗面）** | moonshot-v1-32k | `base_url: https://api.moonshot.cn/v1` |
+| **LM Studio** | 本地部署模型 | `base_url: http://localhost:1234/v1` |
+
+详细配置说明请参考：[docs/UNIVERSAL_LLM_CLIENT.md](docs/UNIVERSAL_LLM_CLIENT.md)
+
+配置示例文件：[config.multi-provider.example.json](config.multi-provider.example.json)
 
 ## Embedding/Reranker 推荐配置
 

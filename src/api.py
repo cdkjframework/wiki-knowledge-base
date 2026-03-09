@@ -13,14 +13,18 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 try:
     from .store.db.history_store import DatabaseHistoryStore
+    from .store.db.connection import DatabaseConnection
     from .store.interfaces import HistoryStore, SessionIdStore
     from .store.memory_store import InMemoryHistoryStore, InMemorySessionIdStore
     from .store.redis.session_store import RedisSessionIdStore
+    from .model_config_manager import ModelConfigManager
 except ImportError:  # pragma: no cover
     from store.db.history_store import DatabaseHistoryStore
+    from store.db.connection import DatabaseConnection
     from store.interfaces import HistoryStore, SessionIdStore
     from store.memory_store import InMemoryHistoryStore, InMemorySessionIdStore
     from store.redis.session_store import RedisSessionIdStore
+    from model_config_manager import ModelConfigManager
 
 try:
     from .knowledge_base import KnowledgeBase
@@ -39,6 +43,7 @@ class KnowledgeBaseApi:
         self.kb = knowledge_base
         self._history_store: HistoryStore = self._init_history_store()
         self._session_store: SessionIdStore = self._init_session_store()
+        self._model_config_manager: ModelConfigManager | None = self._init_model_config_manager()
         config = self._load_project_config()
         self._chat_context_cfg = config.get("chat_context", {})
         if not isinstance(self._chat_context_cfg, dict):
@@ -452,6 +457,65 @@ class KnowledgeBaseApi:
         )
         return store
 
+    def _init_model_config_manager(self) -> ModelConfigManager | None:
+        """Initialize model configuration manager with database backend"""
+        config = self._load_project_config()
+        db_cfg = config.get("db", {})
+        if not isinstance(db_cfg, dict):
+            db_cfg = {}
+
+        backend_raw = os.getenv("KB_HISTORY_BACKEND") or db_cfg.get("backend") or "memory"
+        backend = str(backend_raw or "").strip().lower()
+        
+        # Only initialize if we have a database backend
+        if backend in {"", "memory", "in_memory", "none"}:
+            logger.info("Model config manager: disabled (using memory backend)")
+            return None
+        
+        if backend == "postgres":
+            backend = "postgresql"
+        if backend not in {"mysql", "postgresql"}:
+            logger.warning(f"Model config manager: unsupported backend {backend}")
+            return None
+
+        db_type_key = "mysql" if backend == "mysql" else "postgresql"
+        db_type_cfg = db_cfg.get(db_type_key, {})
+        if not isinstance(db_type_cfg, dict):
+            db_type_cfg = {}
+
+        default_port = 3306 if backend == "mysql" else 5432
+        env_prefix = "KB_HISTORY_MYSQL_" if backend == "mysql" else "KB_HISTORY_PG_"
+
+        host = os.getenv(env_prefix + "HOST") or db_type_cfg.get("host", "127.0.0.1")
+        port = os.getenv(env_prefix + "PORT") or db_type_cfg.get("port", default_port)
+        user = os.getenv(env_prefix + "USER") or db_type_cfg.get("user", "")
+        password = os.getenv(env_prefix + "PASSWORD") or db_type_cfg.get("password", "")
+        database = os.getenv(env_prefix + "DATABASE") or db_type_cfg.get("database", "knowledge_base")
+        timeout = os.getenv(env_prefix + "CONNECT_TIMEOUT") or db_type_cfg.get("connect_timeout", 5)
+
+        try:
+            db_connection = DatabaseConnection(
+                backend=backend,
+                host=str(host),
+                port=int(port),
+                user=str(user),
+                password=str(password),
+                database=str(database),
+                connect_timeout=int(timeout),
+            )
+            manager = ModelConfigManager(db_connection)
+            logger.info(
+                "Model config manager: %s (%s:%s/%s)",
+                backend,
+                host,
+                port,
+                database,
+            )
+            return manager
+        except Exception as exc:
+            logger.error(f"Failed to initialize model config manager: {exc}")
+            return None
+
     def _new_session_id(self, user_id: str | None) -> str:
         if not user_id:
             raise ValueError("user_id is required")
@@ -538,6 +602,45 @@ class KnowledgeBaseApi:
             "No chat model configured. Set KB_CHAT_MODEL or knowledge_base.lm_studio.chat_model."
         )
 
+    def _resolve_runtime_model_config(
+        self,
+        llm_model: str | None = None,
+        model_config_id: int | None = None,
+        model_config_name: str | None = None,
+        use_default_model_config: bool = False,
+    ) -> tuple[Any | None, str]:
+        """Resolve runtime chat client/model from db model config or fallback to built-in backend."""
+        if not self._model_config_manager:
+            return None, self._resolve_llm_model(llm_model)
+
+        wants_db_model = (
+            model_config_id is not None
+            or bool(model_config_name)
+            or bool(use_default_model_config)
+        )
+        if not wants_db_model:
+            return None, self._resolve_llm_model(llm_model)
+
+        if model_config_id is not None:
+            cfg = self._model_config_manager.store.get_config(int(model_config_id))
+            if not cfg:
+                raise ValueError(f"model_config_id not found: {model_config_id}")
+            client = self._model_config_manager.get_client(config_id=int(model_config_id))
+            return client, str(llm_model or cfg.get("model_name") or "").strip()
+
+        if model_config_name:
+            cfg = self._model_config_manager.store.get_config_by_name(str(model_config_name).strip())
+            if not cfg:
+                raise ValueError(f"model_config_name not found: {model_config_name}")
+            client = self._model_config_manager.get_client(name=str(model_config_name).strip())
+            return client, str(llm_model or cfg.get("model_name") or "").strip()
+
+        cfg = self._model_config_manager.store.get_default_config()
+        if not cfg:
+            raise ValueError("No default model configuration found")
+        client = self._model_config_manager.get_client(use_default=True)
+        return client, str(llm_model or cfg.get("model_name") or "").strip()
+
     @staticmethod
     def _build_context(results: Sequence[Dict[str, Any]], max_chars: int = 5000) -> str:
         blocks: List[str] = []
@@ -582,6 +685,9 @@ class KnowledgeBaseApi:
         question: str,
         results: Sequence[Dict[str, Any]],
         llm_model: str | None = None,
+        model_config_id: int | None = None,
+        model_config_name: str | None = None,
+        use_default_model_config: bool = False,
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
         history_messages: Sequence[Dict[str, Any]] | None = None,
@@ -604,7 +710,12 @@ class KnowledgeBaseApi:
                 content = msg.get("content", "")
                 logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
         
-        model = self._resolve_llm_model(llm_model)
+        runtime_client, model = self._resolve_runtime_model_config(
+            llm_model=llm_model,
+            model_config_id=model_config_id,
+            model_config_name=model_config_name,
+            use_default_model_config=use_default_model_config,
+        )
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
         
         # 根据 model_type 应用深度思考策略
@@ -627,12 +738,20 @@ class KnowledgeBaseApi:
             content = msg.get("content", "")
             logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
         
-        answer = self.kb.chat_once(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        if runtime_client is not None:
+            answer = runtime_client.chat_once(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        else:
+            answer = self.kb.chat_once(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         
         # 输出参数日志
         result = str(answer or "").strip()
@@ -655,6 +774,9 @@ class KnowledgeBaseApi:
         question: str,
         results: Sequence[Dict[str, Any]],
         llm_model: str | None = None,
+        model_config_id: int | None = None,
+        model_config_name: str | None = None,
+        use_default_model_config: bool = False,
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
         history_messages: Sequence[Dict[str, Any]] | None = None,
@@ -677,7 +799,12 @@ class KnowledgeBaseApi:
                 content = msg.get("content", "")
                 logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
         
-        model = self._resolve_llm_model(llm_model)
+        runtime_client, model = self._resolve_runtime_model_config(
+            llm_model=llm_model,
+            model_config_id=model_config_id,
+            model_config_name=model_config_name,
+            use_default_model_config=use_default_model_config,
+        )
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
         
         # 根据 model_type 应用深度思考策略
@@ -701,12 +828,20 @@ class KnowledgeBaseApi:
             logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
         
         logger.info("=== _answer_stream_from_lm_studio 开始流式返回 ===")
-        stream_result = self.kb.chat_stream(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        if runtime_client is not None:
+            stream_result = runtime_client.chat_stream(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        else:
+            stream_result = self.kb.chat_stream(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         logger.info("流对象已返回，将由 SSE 实时转发到前端")
         return stream_result, None
 
@@ -749,6 +884,9 @@ class KnowledgeBaseApi:
         k: int = 2,
         relevance_threshold: float | None = None,
         llm_model: str | None = None,
+        model_config_id: int | None = None,
+        model_config_name: str | None = None,
+        use_default_model_config: bool = False,
         generate_answer: bool = True,
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
@@ -778,6 +916,9 @@ class KnowledgeBaseApi:
                 None if relevance_threshold is None else float(relevance_threshold)
             ),
             "llm_model": llm_model,
+            "model_config_id": model_config_id,
+            "model_config_name": model_config_name,
+            "use_default_model_config": bool(use_default_model_config),
             "generate_answer": bool(generate_answer),
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -825,6 +966,9 @@ class KnowledgeBaseApi:
                     question=query,
                     results=ranked_results,
                     llm_model=llm_model,
+                    model_config_id=model_config_id,
+                    model_config_name=model_config_name,
+                    use_default_model_config=use_default_model_config,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     history_messages=history_messages,
@@ -869,6 +1013,9 @@ class KnowledgeBaseApi:
         k: int = 2,
         relevance_threshold: float | None = None,
         llm_model: str | None = None,
+        model_config_id: int | None = None,
+        model_config_name: str | None = None,
+        use_default_model_config: bool = False,
         generate_answer: bool = True,
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
@@ -885,6 +1032,9 @@ class KnowledgeBaseApi:
                 None if relevance_threshold is None else float(relevance_threshold)
             ),
             "llm_model": llm_model,
+            "model_config_id": model_config_id,
+            "model_config_name": model_config_name,
+            "use_default_model_config": bool(use_default_model_config),
             "generate_answer": bool(generate_answer),
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -921,6 +1071,9 @@ class KnowledgeBaseApi:
                 question=query,
                 results=ranked_results,
                 llm_model=llm_model,
+                model_config_id=model_config_id,
+                model_config_name=model_config_name,
+                use_default_model_config=use_default_model_config,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 history_messages=history_messages,
@@ -1477,6 +1630,27 @@ class HttpApiServer:
                         if "llm_model" in params and params["llm_model"]:
                             llm_model = params["llm_model"][-1].strip() or None
 
+                        model_config_id = None
+                        if "model_config_id" in params and params["model_config_id"]:
+                            try:
+                                model_config_id = int(params["model_config_id"][-1])
+                            except Exception:
+                                self._bad_request("model_config_id must be int")
+                                return
+                        model_config_name = None
+                        if "model_config_name" in params and params["model_config_name"]:
+                            model_config_name = params["model_config_name"][-1].strip() or None
+                        use_default_model_config = False
+                        if "use_default_model_config" in params and params["use_default_model_config"]:
+                            raw = params["use_default_model_config"][-1].strip().lower()
+                            if raw in {"1", "true", "yes", "on"}:
+                                use_default_model_config = True
+                            elif raw in {"0", "false", "no", "off"}:
+                                use_default_model_config = False
+                            else:
+                                self._bad_request("use_default_model_config must be bool")
+                                return
+
                         generate_answer = True
                         if "generate_answer" in params and params["generate_answer"]:
                             raw = params["generate_answer"][-1].strip().lower()
@@ -1522,6 +1696,9 @@ class HttpApiServer:
                                 k=k,
                                 relevance_threshold=relevance_threshold,
                                 llm_model=llm_model,
+                                model_config_id=model_config_id,
+                                model_config_name=model_config_name,
+                                use_default_model_config=use_default_model_config,
                                 generate_answer=generate_answer,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
@@ -1619,6 +1796,9 @@ class HttpApiServer:
                                 k=k,
                                 relevance_threshold=relevance_threshold,
                                 llm_model=llm_model,
+                                model_config_id=model_config_id,
+                                model_config_name=model_config_name,
+                                use_default_model_config=use_default_model_config,
                                 generate_answer=generate_answer,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
@@ -1687,6 +1867,62 @@ class HttpApiServer:
                         
                         self._ok(result, page_index=page_index)
                         return
+                    
+                    # Model configuration endpoints
+                    if path == "/model/configs":
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        params = self._parse_query_params()
+                        provider = self._get_param_value(params, "provider", "").strip() or None
+                        is_active_str = self._get_param_value(params, "is_active", "").strip()
+                        is_active = None
+                        if is_active_str:
+                            is_active = is_active_str.lower() in ("true", "1", "yes")
+                        model_type = self._get_param_value(params, "model_type", "").strip() or None
+                        result = api._model_config_manager.list_model_configs(
+                            provider=provider,
+                            is_active=is_active,
+                            model_type=model_type,
+                        )
+                        self._ok(result)
+                        return
+                    
+                    if path.startswith("/model/config/"):
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        # Extract ID or name
+                        identifier = unquote(path[len("/model/config/"):]).strip()
+                        if not identifier:
+                            self._bad_request("config_id or name is required")
+                            return
+                        # Try to parse as ID first
+                        try:
+                            config_id = int(identifier)
+                            result = api._model_config_manager.get_model_config(config_id=config_id)
+                        except ValueError:
+                            # Use as name
+                            result = api._model_config_manager.get_model_config(name=identifier)
+                        self._ok(result)
+                        return
+                    
+                    if path == "/model/config/default":
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        result = api._model_config_manager.get_default_config()
+                        self._ok(result)
+                        return
+                    
+                    if path == "/model/providers":
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        result = api._model_config_manager.get_supported_providers()
+                        self._ok(result)
+                        return
+                    
                     self._not_found()
                 except Exception as exc:
                     self._internal_error(exc)
@@ -1805,6 +2041,11 @@ class HttpApiServer:
                             None if threshold_raw is None else float(threshold_raw)
                         )
                         llm_model = str(body.get("llm_model", "")).strip() or None
+                        model_config_id = body.get("model_config_id")
+                        if model_config_id is not None:
+                            model_config_id = int(model_config_id)
+                        model_config_name = str(body.get("model_config_name", "")).strip() or None
+                        use_default_model_config = bool(body.get("use_default_model_config", False))
                         temperature_raw = body.get("temperature", 0.2)
                         max_tokens_raw = body.get("max_tokens")
                         temperature = None if temperature_raw is None else float(temperature_raw)
@@ -1820,6 +2061,9 @@ class HttpApiServer:
                                 k=k,
                                 relevance_threshold=relevance_threshold,
                                 llm_model=llm_model,
+                                model_config_id=model_config_id,
+                                model_config_name=model_config_name,
+                                use_default_model_config=use_default_model_config,
                                 generate_answer=generate_answer,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
@@ -1917,6 +2161,9 @@ class HttpApiServer:
                                 k=k,
                                 relevance_threshold=relevance_threshold,
                                 llm_model=llm_model,
+                                model_config_id=model_config_id,
+                                model_config_name=model_config_name,
+                                use_default_model_config=use_default_model_config,
                                 generate_answer=generate_answer,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
@@ -1942,6 +2189,76 @@ class HttpApiServer:
                             return
                         self._ok(api.rebuild_chunks_for_filename(filename), page_index=page_index)
                         return
+                    
+                    # Model configuration POST endpoints
+                    if path == "/model/config":
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        # Add new config
+                        required_fields = ["name", "provider", "base_url", "model_name"]
+                        for field in required_fields:
+                            if not body.get(field):
+                                self._bad_request(f"{field} is required")
+                                return
+                        result = api._model_config_manager.add_model_config(
+                            name=body["name"],
+                            provider=body["provider"],
+                            base_url=body["base_url"],
+                            model_name=body["model_name"],
+                            api_key=body.get("api_key"),
+                            model_type=body.get("model_type", "chat"),
+                            temperature=body.get("temperature", 0.7),
+                            max_tokens=body.get("max_tokens"),
+                            timeout=body.get("timeout", 30.0),
+                            extra_headers=body.get("extra_headers"),
+                            extra_params=body.get("extra_params"),
+                            is_active=body.get("is_active", True),
+                            is_default=body.get("is_default", False),
+                            description=body.get("description"),
+                        )
+                        self._ok(result, page_index=page_index)
+                        return
+                    
+                    if path == "/model/config/test":
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        # Test config
+                        config_id = body.get("config_id")
+                        name = body.get("name")
+                        config_data = body.get("config")
+                        result = api._model_config_manager.test_config(
+                            config_id=config_id,
+                            name=name,
+                            config_data=config_data,
+                        )
+                        self._ok(result, page_index=page_index)
+                        return
+
+                    if path == "/model/config/bootstrap":
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        result = api._model_config_manager.bootstrap_default_configs()
+                        self._ok(result, page_index=page_index)
+                        return
+                    
+                    if path.startswith("/model/config/") and path.endswith("/default"):
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        # Set as default
+                        config_id_str = path[len("/model/config/"):-len("/default")]
+                        try:
+                            config_id = int(config_id_str)
+                        except ValueError:
+                            self._bad_request("config_id must be int")
+                            return
+                        result = api._model_config_manager.set_default_config(config_id)
+                        self._ok(result, page_index=page_index)
+                        return
+                    
                     self._not_found()
                 except ValueError as exc:
                     self._bad_request(str(exc))
@@ -1969,6 +2286,34 @@ class HttpApiServer:
                             return
                         self._ok(api.update_chunk(chunk_id=chunk_id, text=text), page_index=page_index)
                         return
+                    
+                    # Model configuration PUT endpoint
+                    if path.startswith("/model/config/"):
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        config_id_str = unquote(path[len("/model/config/"):]).strip()
+                        try:
+                            config_id = int(config_id_str)
+                        except ValueError:
+                            self._bad_request("config_id must be int")
+                            return
+                        body = self._read_json()
+                        page_index = self._page_index_from_body(body)
+                        # Update config with provided fields
+                        update_fields = {}
+                        allowed_fields = [
+                            "name", "provider", "base_url", "api_key", "model_name", "model_type",
+                            "temperature", "max_tokens", "timeout", "extra_headers", "extra_params",
+                            "is_active", "is_default", "description"
+                        ]
+                        for field in allowed_fields:
+                            if field in body:
+                                update_fields[field] = body[field]
+                        result = api._model_config_manager.update_model_config(config_id, **update_fields)
+                        self._ok(result, page_index=page_index)
+                        return
+                    
                     self._not_found()
                 except ValueError as exc:
                     self._bad_request(str(exc))
@@ -2034,6 +2379,25 @@ class HttpApiServer:
                             return
                         self._ok(api.delete_chunk(chunk_id))
                         return
+                    
+                    # Model configuration DELETE endpoint
+                    if path.startswith("/model/config/"):
+                        if not api._model_config_manager:
+                            self._bad_request("Model configuration management not available (requires database backend)")
+                            return
+                        config_id_str = unquote(path[len("/model/config/"):]).strip()
+                        try:
+                            config_id = int(config_id_str)
+                        except ValueError:
+                            self._bad_request("config_id must be int")
+                            return
+                        result = api._model_config_manager.delete_model_config(config_id)
+                        if not result.get("ok"):
+                            self._not_found()
+                            return
+                        self._ok(result)
+                        return
+                    
                     self._not_found()
                 except Exception as exc:
                     self._internal_error(exc)

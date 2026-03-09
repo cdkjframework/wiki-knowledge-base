@@ -1,0 +1,113 @@
+{
+  "api_key_cipher": "CIPHER_PLACEHOLDER",
+  "db_password_cipher": "CIPHER_PLACEHOLDER",
+  "search": {
+    "default_k": 2,
+    "max_search_results": 3
+  },
+  "db": {
+    "backend": "mysql",
+    "table": "kb_session_messages",
+    "mysql": {
+      "host": "127.0.0.1",
+      "port": 3306,
+      "user": "root",
+      "password": "password",
+      "database": "knowledge_base",
+      "connect_timeout": 5
+    },
+    "postgresql": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "postgres",
+      "password": "",
+      "database": "knowledge_base",
+      "connect_timeout": 5
+    }
+  },
+  "session": {
+    "backend": "redis",
+    "redis": {
+      "host": "127.0.0.1",
+      "port": 6379,
+      "database": 0,
+      "password": ""
+    }
+  },
+  "knowledge_base": {
+    "storage": {
+      "persist_dir": "./kb_store",
+      "model_cache_dir": "./models/hf_cache"
+    },
+    "embedding": {
+      "model": "Qwen/Qwen3-Embedding-0.6B",
+      "dimension": null,
+      "device": "auto",
+      "local_files_only": true,
+      "use_lm_studio": false
+    },
+    "rerank": {
+      "model": "Qwen/Qwen3-Reranker-0.6B",
+      "use_lm_studio": false
+    },
+    "chat": {
+      "model_type": "qwen",
+      "model": "qwen-max",
+      "use_lm_studio": true,
+      "local_files_only": false,
+      "temperature": 0.2,
+      "max_tokens": 4096
+    },
+    "lm_studio": {
+      "provider": "qwen",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "sk-your-dashscope-api-key",
+      "chat_model": "qwen-max",
+      "timeout": 60
+    },
+    "chunking": {
+      "size": 800,
+      "overlap": 120
+    },
+    "retrieval": {
+      "candidate_multiplier": 8,
+      "min_candidates": 30,
+      "embed_weight": 0.35,
+      "rerank_weight": 0.65
+    }
+  },
+  "chat_context": {
+    "enabled": true,
+    "max_turns": 6
+  },
+  "logging": {
+    "level": "INFO",
+    "keep_days": 7,
+    "enable_debug": false,
+    "console_level": "INFO"
+  },
+  "_comments": {
+    "lm_studio": {
+      "provider": "可选值: openai, deepseek, qwen, doubao, xai, gemini, kimi, lm_studio",
+      "base_url_examples": {
+        "openai": "https://api.openai.com/v1",
+        "deepseek": "https://api.deepseek.com/v1",
+        "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "doubao": "https://ark.cn-beijing.volces.com/api/v3",
+        "xai": "https://api.x.ai/v1",
+        "gemini": "https://generativelanguage.googleapis.com/v1beta",
+        "kimi": "https://api.moonshot.cn/v1",
+        "lm_studio": "http://localhost:1234/v1"
+      },
+      "model_examples": {
+        "openai": "gpt-4, gpt-4-turbo, gpt-3.5-turbo",
+        "deepseek": "deepseek-chat, deepseek-coder",
+        "qwen": "qwen-max, qwen-plus, qwen-turbo, qwen-long",
+        "doubao": "doubao-pro-32k, doubao-lite-32k",
+        "xai": "grok-beta, grok-vision-beta",
+        "gemini": "gemini-pro, gemini-ultra, gemini-vision-pro",
+        "kimi": "moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k"
+      }
+    }
+  }
+}

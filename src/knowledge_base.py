@@ -303,9 +303,14 @@ class KnowledgeBase:
                 if local_only_env:
                     self.local_files_only = local_only_env in {"1", "true", "yes", "on"}
                 else:
-                    self.local_files_only = True
+                    # 默认允许联网下载（改为 False）
+                    self.local_files_only = False
         else:
             self.local_files_only = bool(local_files_only)
+        
+        # 调试：输出 local_files_only 的值
+        logger.info("KnowledgeBase initialized: local_files_only=%s (from config=%s)", 
+                    self.local_files_only, cfg_local_only)
         self._configure_hf_offline_mode()
 
         if device:
@@ -417,6 +422,10 @@ class KnowledgeBase:
 
     def _configure_hf_offline_mode(self) -> None:
         if not self.local_files_only:
+            # 确保在线模式时清除可能存在的离线标志
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            os.environ.pop("HF_DATASETS_OFFLINE", None)
             return
         # Keep HuggingFace stack fully offline when local cache mode is enabled.
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -574,18 +583,56 @@ class KnowledgeBase:
                 "Failed to import transformers stack. "
                 "Install missing deps (e.g. certifi, transformers, huggingface_hub)."
             ) from exc
-        self._embed_tokenizer = AutoTokenizer.from_pretrained(
+        
+        # 设置 Hugging Face 镜像（支持国内访问）
+        endpoint = (
+            os.environ.get("HF_HUB_ENDPOINT")
+            or os.environ.get("HF_ENDPOINT")
+            or "https://hf-mirror.com"
+        )
+        os.environ["HF_ENDPOINT"] = endpoint
+        os.environ["HF_HUB_ENDPOINT"] = endpoint
+        
+        logger.info(
+            "Loading embedding model: %s (local_files_only=%s, mirror=%s)",
             self.embedding_model_name,
+            self.local_files_only,
+            os.environ.get("HF_HUB_ENDPOINT"),
+        )
+
+        kwargs = dict(
             trust_remote_code=True,
             local_files_only=self.local_files_only,
             cache_dir=str(self.model_cache_dir),
+            resume_download=True,
         )
-        self._embed_model = AutoModel.from_pretrained(
-            self.embedding_model_name,
-            trust_remote_code=True,
-            local_files_only=self.local_files_only,
-            cache_dir=str(self.model_cache_dir),
-        )
+        try:
+            self._embed_tokenizer = AutoTokenizer.from_pretrained(
+                self.embedding_model_name,
+                **kwargs,
+            )
+            self._embed_model = AutoModel.from_pretrained(
+                self.embedding_model_name,
+                **kwargs,
+            )
+        except Exception as exc:
+            # 常见于缓存不完整（例如仅下载到 config，没有下载到模型权重）
+            if self.local_files_only:
+                raise
+            logger.warning("Embedding model first load failed, retry in online mode: %s", exc)
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["local_files_only"] = False
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            os.environ.pop("HF_DATASETS_OFFLINE", None)
+            self._embed_tokenizer = AutoTokenizer.from_pretrained(
+                self.embedding_model_name,
+                **retry_kwargs,
+            )
+            self._embed_model = AutoModel.from_pretrained(
+                self.embedding_model_name,
+                **retry_kwargs,
+            )
         self._embed_model.to(self.device)
         self._embed_model.eval()
 
@@ -603,27 +650,68 @@ class KnowledgeBase:
                 "Failed to import transformers stack. "
                 "Install missing deps (e.g. certifi, transformers, huggingface_hub)."
             ) from exc
-        self._rerank_tokenizer = AutoTokenizer.from_pretrained(
+        
+        # 设置 Hugging Face 镜像（支持国内访问）
+        endpoint = (
+            os.environ.get("HF_HUB_ENDPOINT")
+            or os.environ.get("HF_ENDPOINT")
+            or "https://hf-mirror.com"
+        )
+        os.environ["HF_ENDPOINT"] = endpoint
+        os.environ["HF_HUB_ENDPOINT"] = endpoint
+        
+        logger.info(
+            "Loading reranker model: %s (local_files_only=%s, mirror=%s)",
             self.reranker_model_name,
+            self.local_files_only,
+            os.environ.get("HF_HUB_ENDPOINT"),
+        )
+
+        kwargs = dict(
             trust_remote_code=True,
             local_files_only=self.local_files_only,
             cache_dir=str(self.model_cache_dir),
+            resume_download=True,
         )
         try:
-            # Prefer model's native implementation (often provides compute_score for reranker).
-            self._rerank_model = AutoModel.from_pretrained(
+            self._rerank_tokenizer = AutoTokenizer.from_pretrained(
                 self.reranker_model_name,
-                trust_remote_code=True,
-                local_files_only=self.local_files_only,
-                cache_dir=str(self.model_cache_dir),
+                **kwargs,
             )
-        except Exception:
-            self._rerank_model = AutoModelForSequenceClassification.from_pretrained(
+            try:
+                # Prefer model's native implementation (often provides compute_score for reranker).
+                self._rerank_model = AutoModel.from_pretrained(
+                    self.reranker_model_name,
+                    **kwargs,
+                )
+            except Exception:
+                self._rerank_model = AutoModelForSequenceClassification.from_pretrained(
+                    self.reranker_model_name,
+                    **kwargs,
+                )
+        except Exception as exc:
+            if self.local_files_only:
+                raise
+            logger.warning("Reranker first load failed, retry in online mode: %s", exc)
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["local_files_only"] = False
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            os.environ.pop("HF_DATASETS_OFFLINE", None)
+            self._rerank_tokenizer = AutoTokenizer.from_pretrained(
                 self.reranker_model_name,
-                trust_remote_code=True,
-                local_files_only=self.local_files_only,
-                cache_dir=str(self.model_cache_dir),
+                **retry_kwargs,
             )
+            try:
+                self._rerank_model = AutoModel.from_pretrained(
+                    self.reranker_model_name,
+                    **retry_kwargs,
+                )
+            except Exception:
+                self._rerank_model = AutoModelForSequenceClassification.from_pretrained(
+                    self.reranker_model_name,
+                    **retry_kwargs,
+                )
         self._rerank_model.to(self.device)
         self._rerank_model.eval()
         logger.info(

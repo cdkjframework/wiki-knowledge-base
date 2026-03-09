@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -26,6 +27,11 @@ class Main:
         self._last_warmup: Dict[str, Any] | None = None
 
     @staticmethod
+    def _is_warmup_strict() -> bool:
+        raw = os.getenv("KB_WARMUP_STRICT", "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
     def _ensure_warmup_success(
         warmup: Dict[str, Any],
         preload_embedding: bool,
@@ -37,7 +43,10 @@ class Main:
         if preload_reranker and not bool(warmup.get("reranker_loaded")):
             errors.append(f"reranker not loaded: {warmup.get('reranker_error', 'unknown error')}")
         if errors:
-            raise RuntimeError("Model warmup failed at startup: " + "; ".join(errors))
+            msg = "Model warmup failed at startup: " + "; ".join(errors)
+            if Main._is_warmup_strict():
+                raise RuntimeError(msg)
+            logger.warning("%s; continue startup because KB_WARMUP_STRICT is not enabled.", msg)
 
     def startup(
         self, preload_embedding: bool = True, preload_reranker: bool = True

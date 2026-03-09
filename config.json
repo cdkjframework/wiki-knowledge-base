@@ -9,7 +9,7 @@
     "backend": "mysql",
     "table": "kb_session_messages",
     "mysql": {
-      "host": "10.10.0.33",
+      "host": "10.6.2.10",
       "port": 3306,
       "user": "root",
       "password": "I5*Z70in82WVfDYU",
@@ -28,7 +28,7 @@
   "session": {
     "backend": "redis",
     "redis": {
-      "host": "10.10.0.58",
+      "host": "10.6.2.8",
       "port": 6379,
       "database": 10,
       "password": ""
@@ -43,7 +43,7 @@
       "model": "Qwen/Qwen3-Embedding-0.6B",
       "dimension": null,
       "device": "auto",
-      "local_files_only": true,
+      "local_files_only": false,
       "use_lm_studio": false
     },
     "rerank": {

@@ -604,7 +604,6 @@ class KnowledgeBase:
             trust_remote_code=True,
             local_files_only=self.local_files_only,
             cache_dir=str(self.model_cache_dir),
-            resume_download=True,
         )
         try:
             self._embed_tokenizer = AutoTokenizer.from_pretrained(
@@ -671,7 +670,6 @@ class KnowledgeBase:
             trust_remote_code=True,
             local_files_only=self.local_files_only,
             cache_dir=str(self.model_cache_dir),
-            resume_download=True,
         )
         try:
             self._rerank_tokenizer = AutoTokenizer.from_pretrained(

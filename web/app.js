@@ -21,6 +21,9 @@ const chunkEditState = {
   id: null,
   filename: '',
 };
+const chunkManagerState = {
+  selectedFilename: '',
+};
 
 function renderKnowledgeSources(results = [], statusText = '') {
   const list = document.getElementById('sources-list');
@@ -61,7 +64,7 @@ function renderKnowledgeSources(results = [], statusText = '') {
     const score = document.createElement('div');
     score.className = 'source-score';
     const sim = item.similarity != null ? Number(item.similarity) : null;
-    score.textContent = sim == null || Number.isNaN(sim) ? '-' : sim.toFixed(3);
+    score.textContent = sim == null || Number.isNaN(sim) ? '-' : `${(sim * 100).toFixed(1)}%`;
 
     const text = document.createElement('div');
     text.className = 'source-text';
@@ -1147,6 +1150,28 @@ function closeBatchUploadModal() {
   document.body.style.overflow = '';
 }
 
+function openChunkManagerModal(filename = '') {
+  const modal = document.getElementById('chunk-manager-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  chunkManagerState.selectedFilename = String(filename || '').trim();
+  const selectedInput = document.getElementById('chunk-selected-filename');
+  if (selectedInput) selectedInput.value = chunkManagerState.selectedFilename;
+
+  const queryInput = document.getElementById('chunk-query');
+  if (queryInput) queryInput.value = '';
+  chunkState.pageIndex = 1;
+  refreshChunks().catch((err) => showToast(err.message, false));
+}
+
+function closeChunkManagerModal() {
+  const modal = document.getElementById('chunk-manager-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
 function fillModelForm(config) {
   if (!config) return;
   document.getElementById('model-config-id').value = String(config.id ?? '');
@@ -1427,6 +1452,18 @@ function renderDocsTable(documents) {
       `;
       
       const actionCell = tr.lastElementChild;
+      const chunkManageBtn = document.createElement('button');
+      chunkManageBtn.className = 'chunks-action-btn';
+      chunkManageBtn.textContent = '分片管理';
+      chunkManageBtn.addEventListener('click', () => {
+        const filename = String(doc.filename || '').trim();
+        if (!filename) {
+          showToast('文件名无效', false);
+          return;
+        }
+        openChunkManagerModal(filename);
+      });
+
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'chunks-action-btn danger';
       deleteBtn.textContent = '删除';
@@ -1435,41 +1472,17 @@ function renderDocsTable(documents) {
         if (!ok) return;
         deleteDocument(doc.filename).catch((err) => showToast(err.message, false));
       });
-      
+
+      actionCell.style.display = 'flex';
+      actionCell.style.gap = '8px';
+      actionCell.style.flexWrap = 'wrap';
+      actionCell.appendChild(chunkManageBtn);
       actionCell.appendChild(deleteBtn);
       tbody.appendChild(tr);
     }
     documentsList = documents;
   }
   
-  // 更新分片筛选下拉列表
-  updateChunkFilenameSelect();
-}
-
-function updateChunkFilenameSelect() {
-  const select = document.getElementById('chunk-filename');
-  const currentValue = select.value;
-  
-  // 保留"全部文档"选项
-  select.innerHTML = '<option value="">-- 全部文档 --</option>';
-  
-  // 添加文档选项
-  if (Array.isArray(documentsList) && documentsList.length > 0) {
-    for (const doc of documentsList) {
-      const option = document.createElement('option');
-      option.value = String(doc.filename || '');
-      option.textContent = String(doc.filename || '');
-      select.appendChild(option);
-    }
-    
-    // 如果之前没有选择或者选择的文件不存在了，默认选择第一个文档
-    if (!currentValue || !documentsList.some(d => d.filename === currentValue)) {
-      select.value = String(documentsList[0].filename || '');
-      // 触发自动应用筛选
-      chunkState.pageIndex = 1;
-      refreshChunks().catch((err) => showToast(err.message, false));
-    }
-  }
 }
 
 function truncateText(text, maxLen = 120) {
@@ -1553,7 +1566,7 @@ async function confirmChunkDialog() {
 }
 
 function getChunkFilters() {
-  const filename = document.getElementById('chunk-filename').value.trim();
+  const filename = String(chunkManagerState.selectedFilename || '').trim();
   const query = document.getElementById('chunk-query').value.trim();
   const pageSizeRaw = Number(document.getElementById('chunk-page-size').value || 8);
   const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.floor(pageSizeRaw) : 8;
@@ -1563,6 +1576,12 @@ function getChunkFilters() {
 
 async function refreshChunks() {
   const { filename, query } = getChunkFilters();
+  if (!filename) {
+    renderChunksTable([]);
+    chunkState.total = 0;
+    document.getElementById('chunk-page-info').textContent = '第 1 / 1 页';
+    return;
+  }
   const params = new URLSearchParams();
   params.set('pageIndex', String(chunkState.pageIndex));
   params.set('pageSize', String(chunkState.pageSize));
@@ -1597,12 +1616,12 @@ async function deleteChunk(id) {
 }
 
 async function rebuildChunks() {
-  const filename = document.getElementById('chunk-rebuild-filename').value.trim();
+  const filename = String(chunkManagerState.selectedFilename || '').trim();
   if (!filename) {
-    showToast('请输入文件名', false);
+    showToast('请先在文档列表中选择“分片管理”文档', false);
     return;
   }
-  const ok = window.confirm('将按当前分片规则重建该文件的分片，是否继续？');
+  const ok = window.confirm(`将按当前分片规则重建文档 ${filename} 的分片，是否继续？`);
   if (!ok) return;
   const data = await apiRequest('/kb/chunks/rebuild', {
     method: 'POST',
@@ -1617,9 +1636,11 @@ async function rebuildChunks() {
 async function refreshDocuments() {
   const data = await apiRequest('/kb/documents');
   const documents = data.documents || [];
-    // 保存原始数据用于筛选
-    window.allDocuments = documents;
+  // 保存原始数据用于筛选
+  window.allDocuments = documents;
   applyDocumentFilters(documents);
+}
+
 function applyDocumentFilters(documents) {
   if (!Array.isArray(documents)) {
     renderDocsTable([]);
@@ -1656,8 +1677,6 @@ function applyDocumentFilters(documents) {
   });
   
   renderDocsTable(filtered);
-}
-
 }
 
 async function refreshStats() {
@@ -1961,11 +1980,14 @@ function bindEvents() {
     });
   }
   
-  const chunkFilename = document.getElementById('chunk-filename');
-  if (chunkFilename) {
-    chunkFilename.addEventListener('change', () => {
-      chunkState.pageIndex = 1;
-      refreshChunks().catch((err) => showToast(err.message, false));
+  const chunkQuery = document.getElementById('chunk-query');
+  if (chunkQuery) {
+    chunkQuery.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        chunkState.pageIndex = 1;
+        refreshChunks().catch((err) => showToast(err.message, false));
+      }
     });
   }
   
@@ -2004,6 +2026,26 @@ function bindEvents() {
       rebuildChunks().catch((err) => showToast(err.message, false));
     });
   }
+
+  const btnDeleteSelectedDocument = document.getElementById('btn-delete-selected-document');
+  if (btnDeleteSelectedDocument) {
+    btnDeleteSelectedDocument.addEventListener('click', () => {
+      const selected = String(chunkManagerState.selectedFilename || '').trim();
+      if (!selected) {
+        showToast('请先在文档列表中选择“分片管理”文档', false);
+        return;
+      }
+      const ok = window.confirm(`确定删除所选文档 ${selected} 吗？`);
+      if (!ok) return;
+      deleteDocument(selected)
+        .then(async () => {
+          chunkManagerState.selectedFilename = '';
+          await refreshDocuments();
+          await refreshChunks();
+        })
+        .catch((err) => showToast(err.message, false));
+    });
+  }
   
   const btnSaveRetrievalSettings = document.getElementById('btn-save-retrieval-settings');
   if (btnSaveRetrievalSettings) {
@@ -2032,6 +2074,20 @@ function bindEvents() {
     retrievalSettingsModal.addEventListener('click', (event) => {
       if (event.target === retrievalSettingsModal) {
         closeRetrievalSettingsModal();
+      }
+    });
+  }
+
+  const chunkManagerModalCloseBtn = document.getElementById('chunk-manager-modal-close-btn');
+  if (chunkManagerModalCloseBtn) {
+    chunkManagerModalCloseBtn.addEventListener('click', closeChunkManagerModal);
+  }
+
+  const chunkManagerModal = document.getElementById('chunk-manager-modal');
+  if (chunkManagerModal) {
+    chunkManagerModal.addEventListener('click', (event) => {
+      if (event.target === chunkManagerModal) {
+        closeChunkManagerModal();
       }
     });
   }
@@ -2105,6 +2161,10 @@ function bindEvents() {
     if (event.key === 'Escape' && chunkDialog && chunkDialog.classList.contains('open')) {
       closeChunkDialog();
     }
+    const chunkManagerModal = document.getElementById('chunk-manager-modal');
+    if (event.key === 'Escape' && chunkManagerModal && chunkManagerModal.classList.contains('show')) {
+      closeChunkManagerModal();
+    }
   });
 }
 
@@ -2149,7 +2209,6 @@ async function bootstrap() {
     if (document.getElementById('docs-table')) {
       loadRetrievalSettings();
       initTasks.push(refreshDocuments().catch(() => {}));
-      initTasks.push(refreshChunks().catch(() => {}));
       
       // 统计信息折叠/展开功能
       const statsHeader = document.getElementById('stats-header');

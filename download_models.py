@@ -26,7 +26,6 @@ try:
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,
-        resume_download=True,
     )
     print("✓ Tokenizer 下载完成")
     
@@ -35,7 +34,6 @@ try:
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,
-        resume_download=True,
     )
     print("✓ Model 下载完成")
     
@@ -47,7 +45,6 @@ try:
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,
-        resume_download=True,
     )
     print("✓ Tokenizer 下载完成")
     
@@ -56,7 +53,6 @@ try:
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,
-        resume_download=True,
     )
     print("✓ Model 下载完成")
     

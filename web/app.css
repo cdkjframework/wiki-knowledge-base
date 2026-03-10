@@ -8,7 +8,7 @@
   --accent-strong: #0f766e;
   --danger: #b42318;
   --glow: rgba(13, 148, 136, 0.22);
-  --radius: 16px;
+  --radius: 6px;
   --shadow: 0 22px 50px rgba(30, 41, 59, 0.12);
 }
 
@@ -1293,7 +1293,7 @@ input.size-small {
 }
 
 .chat-box {
-  height: 600px;
+  height: calc(100vh - 340px);
   display: flex;
   flex-direction: column;
 }
@@ -1947,6 +1947,17 @@ input.size-small {
   overflow-y: auto;
 }
 
+.chunk-manager-modal-content {
+  width: 80%;
+  max-width: 1100px;
+}
+
+.chunk-manager-body {
+  padding: 20px 24px 24px;
+  max-height: calc(90vh - 88px);
+  overflow-y: auto;
+}
+
 /* 响应式 - 移动端模态框 */
 @media (max-width: 768px) {
   .modal-content {
@@ -1964,5 +1975,9 @@ input.size-small {
   
   .modal-content .form-grid {
     padding: 20px;
+  }
+
+  .chunk-manager-body {
+    padding: 16px 20px 20px;
   }
 }

@@ -218,6 +218,7 @@ class KnowledgeBase:
         cfg_local_only = embedding_cfg.get(
             "local_files_only", kb_cfg.get("local_files_only", True)
         )
+        cfg_auto_download_missing = kb_cfg.get("auto_download_missing_models", True)
         cfg_lm_base = lm_cfg.get("base_url", kb_cfg.get("lm_studio_base_url"))
         cfg_lm_api_key = lm_cfg.get("api_key", kb_cfg.get("lm_studio_api_key"))
         cfg_lm_timeout = lm_cfg.get("timeout", kb_cfg.get("lm_studio_timeout", 30))
@@ -307,6 +308,11 @@ class KnowledgeBase:
                     self.local_files_only = False
         else:
             self.local_files_only = bool(local_files_only)
+
+        if isinstance(cfg_auto_download_missing, bool):
+            self.auto_download_missing_models = cfg_auto_download_missing
+        else:
+            self.auto_download_missing_models = True
         
         # 调试：输出 local_files_only 的值
         logger.info("KnowledgeBase initialized: local_files_only=%s (from config=%s)", 
@@ -432,6 +438,51 @@ class KnowledgeBase:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+    @staticmethod
+    def _force_hf_online_mode() -> None:
+        # Some libs cache offline flags at import time; clear env and patch constants.
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        os.environ.pop("HF_DATASETS_OFFLINE", None)
+        try:
+            import huggingface_hub.constants as hf_constants  # type: ignore
+
+            hf_constants.HF_HUB_OFFLINE = False
+        except Exception:
+            pass
+
+    def _download_model_snapshot(self, model_name: str) -> str:
+        self._force_hf_online_mode()
+        endpoint = (
+            os.environ.get("HF_HUB_ENDPOINT")
+            or os.environ.get("HF_ENDPOINT")
+            or "https://hf-mirror.com"
+        )
+        os.environ["HF_ENDPOINT"] = endpoint
+        os.environ["HF_HUB_ENDPOINT"] = endpoint
+        try:
+            from huggingface_hub import snapshot_download
+        except Exception as exc:
+            raise RuntimeError("huggingface_hub is required for auto-download fallback") from exc
+
+        logger.info("Downloading model snapshot: %s via %s", model_name, endpoint)
+        local_dir = snapshot_download(
+            repo_id=model_name,
+            cache_dir=str(self.model_cache_dir),
+            resume_download=True,
+            local_files_only=False,
+            endpoint=endpoint,
+        )
+        logger.info("Model snapshot downloaded: %s -> %s", model_name, local_dir)
+        return str(local_dir)
+        try:
+            import transformers.utils.hub as tf_hub_utils  # type: ignore
+
+            if hasattr(tf_hub_utils, "_is_offline_mode"):
+                tf_hub_utils._is_offline_mode = False
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_filename(name: str | None) -> str:
@@ -594,45 +645,48 @@ class KnowledgeBase:
         os.environ["HF_HUB_ENDPOINT"] = endpoint
         
         logger.info(
-            "Loading embedding model: %s (local_files_only=%s, mirror=%s)",
+            "Loading embedding model(local-first): %s (auto_download_missing_models=%s, mirror=%s)",
             self.embedding_model_name,
-            self.local_files_only,
+            self.auto_download_missing_models,
             os.environ.get("HF_HUB_ENDPOINT"),
         )
 
         kwargs = dict(
             trust_remote_code=True,
-            local_files_only=self.local_files_only,
             cache_dir=str(self.model_cache_dir),
             resume_download=True,
         )
         try:
             self._embed_tokenizer = AutoTokenizer.from_pretrained(
                 self.embedding_model_name,
+                local_files_only=True,
                 **kwargs,
             )
             self._embed_model = AutoModel.from_pretrained(
                 self.embedding_model_name,
+                local_files_only=True,
                 **kwargs,
             )
-        except Exception as exc:
-            # 常见于缓存不完整（例如仅下载到 config，没有下载到模型权重）
-            if self.local_files_only:
+            logger.info("Embedding model loaded from local cache: %s", self.embedding_model_name)
+        except Exception as local_exc:
+            if not self.auto_download_missing_models:
                 raise
-            logger.warning("Embedding model first load failed, retry in online mode: %s", exc)
-            retry_kwargs = dict(kwargs)
-            retry_kwargs["local_files_only"] = False
-            os.environ.pop("HF_HUB_OFFLINE", None)
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
-            os.environ.pop("HF_DATASETS_OFFLINE", None)
+            logger.warning(
+                "Embedding model not found or incomplete in local cache, will auto-download: %s",
+                local_exc,
+            )
+            local_snapshot = self._download_model_snapshot(self.embedding_model_name)
             self._embed_tokenizer = AutoTokenizer.from_pretrained(
-                self.embedding_model_name,
-                **retry_kwargs,
+                local_snapshot,
+                local_files_only=True,
+                **kwargs,
             )
             self._embed_model = AutoModel.from_pretrained(
-                self.embedding_model_name,
-                **retry_kwargs,
+                local_snapshot,
+                local_files_only=True,
+                **kwargs,
             )
+            logger.info("Embedding model downloaded and loaded: %s", self.embedding_model_name)
         self._embed_model.to(self.device)
         self._embed_model.eval()
 
@@ -661,57 +715,63 @@ class KnowledgeBase:
         os.environ["HF_HUB_ENDPOINT"] = endpoint
         
         logger.info(
-            "Loading reranker model: %s (local_files_only=%s, mirror=%s)",
+            "Loading reranker model(local-first): %s (auto_download_missing_models=%s, mirror=%s)",
             self.reranker_model_name,
-            self.local_files_only,
+            self.auto_download_missing_models,
             os.environ.get("HF_HUB_ENDPOINT"),
         )
 
         kwargs = dict(
             trust_remote_code=True,
-            local_files_only=self.local_files_only,
             cache_dir=str(self.model_cache_dir),
             resume_download=True,
         )
         try:
             self._rerank_tokenizer = AutoTokenizer.from_pretrained(
                 self.reranker_model_name,
+                local_files_only=True,
                 **kwargs,
             )
             try:
                 # Prefer model's native implementation (often provides compute_score for reranker).
                 self._rerank_model = AutoModel.from_pretrained(
                     self.reranker_model_name,
+                    local_files_only=True,
                     **kwargs,
                 )
             except Exception:
                 self._rerank_model = AutoModelForSequenceClassification.from_pretrained(
                     self.reranker_model_name,
+                    local_files_only=True,
                     **kwargs,
                 )
-        except Exception as exc:
-            if self.local_files_only:
+            logger.info("Reranker model loaded from local cache: %s", self.reranker_model_name)
+        except Exception as local_exc:
+            if not self.auto_download_missing_models:
                 raise
-            logger.warning("Reranker first load failed, retry in online mode: %s", exc)
-            retry_kwargs = dict(kwargs)
-            retry_kwargs["local_files_only"] = False
-            os.environ.pop("HF_HUB_OFFLINE", None)
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
-            os.environ.pop("HF_DATASETS_OFFLINE", None)
+            logger.warning(
+                "Reranker model not found or incomplete in local cache, will auto-download: %s",
+                local_exc,
+            )
+            local_snapshot = self._download_model_snapshot(self.reranker_model_name)
             self._rerank_tokenizer = AutoTokenizer.from_pretrained(
-                self.reranker_model_name,
-                **retry_kwargs,
+                local_snapshot,
+                local_files_only=True,
+                **kwargs,
             )
             try:
                 self._rerank_model = AutoModel.from_pretrained(
-                    self.reranker_model_name,
-                    **retry_kwargs,
+                    local_snapshot,
+                    local_files_only=True,
+                    **kwargs,
                 )
             except Exception:
                 self._rerank_model = AutoModelForSequenceClassification.from_pretrained(
-                    self.reranker_model_name,
-                    **retry_kwargs,
+                    local_snapshot,
+                    local_files_only=True,
+                    **kwargs,
                 )
+            logger.info("Reranker model downloaded and loaded: %s", self.reranker_model_name)
         self._rerank_model.to(self.device)
         self._rerank_model.eval()
         logger.info(

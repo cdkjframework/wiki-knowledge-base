@@ -57,13 +57,11 @@ class ChatModel:
         )
 
     def _configure_hf_offline_mode(self) -> None:
-        if not self.local_files_only:
-            return
-        # Avoid remote metadata checks in local cache mode.
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-        os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
-        os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+        # Do not set process-wide offline env flags here.
+        # ChatModel uses local_files_only per from_pretrained call, so global flags
+        # would incorrectly force other modules (e.g. embedding/reranker fallback)
+        # to stay offline and block auto-download.
+        return
 
     @staticmethod
     def _msg_content_to_text(content: Any) -> str:

@@ -654,7 +654,6 @@ class KnowledgeBase:
         kwargs = dict(
             trust_remote_code=True,
             cache_dir=str(self.model_cache_dir),
-            resume_download=True,
         )
         try:
             self._embed_tokenizer = AutoTokenizer.from_pretrained(
@@ -724,7 +723,6 @@ class KnowledgeBase:
         kwargs = dict(
             trust_remote_code=True,
             cache_dir=str(self.model_cache_dir),
-            resume_download=True,
         )
         try:
             self._rerank_tokenizer = AutoTokenizer.from_pretrained(

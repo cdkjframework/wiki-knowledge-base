@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>知识库管理 - WIKI本地知识库控制台</title>
+  <link href="https://cdn.staticfile.org/lxgw-wenkai-screen-webfont/1.7.0/style.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <div class="bg-layer"></div>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-logo" src="/assets/logo.png" alt="WIKI logo">
+        <div>
+          <h1>WIKI本地知识库控制台</h1>
+          <p>本地知识库工作台</p>
+        </div>
+      </div>
+      <nav class="menu">
+        <a class="menu-item" href="/ui/">聊天</a>
+        <a class="menu-item active" href="/ui/kb.html">知识库管理</a>
+        <a class="menu-item" href="/ui/model.html">模型管理</a>
+      </nav>
+      <a class="doc-link" href="/api-docs" target="_blank" rel="noreferrer">查看 API 文档</a>
+    </aside>
+
+    <section class="content">
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+      <header class="panel-head">
+        <h2>知识库管理</h2>
+        <p>文档增删、上传、批量上传与统计查看。</p>
+      </header>
+
+      <div class="card" style="display: flex; align-items: center; justify-content: space-between; height: 75px; gap: 10px;">
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button id="btn-open-add-doc" class="btn primary size-small">新增文档</button>
+          <button id="btn-open-upload" class="btn size-small">上传文件</button>
+          <button id="btn-open-batch-upload" class="btn size-small">批量上传</button>
+          <button id="btn-clear-kb" class="btn danger size-small">清空知识库</button>
+        </div>
+        <button id="btn-open-retrieval-settings" class="btn-icon" title="检索设置">
+<svg t="1773120997742" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5614" width="24" height="24"><path d="M1016.832 606.208q2.048 12.288-1.024 29.696t-10.24 35.328-17.408 32.256-22.528 20.48-21.504 6.144-20.48-4.096q-10.24-3.072-25.6-5.632t-31.232-1.024-31.744 6.656-27.136 17.408q-24.576 25.6-28.672 58.368t9.216 62.464q10.24 20.48-3.072 40.96-6.144 8.192-19.456 16.896t-29.184 15.872-33.28 11.264-30.72 4.096q-9.216 0-17.408-7.168t-11.264-15.36l-1.024 0q-11.264-31.744-38.4-54.784t-62.976-23.04q-34.816 0-62.976 23.04t-39.424 53.76q-5.12 12.288-15.36 17.92t-22.528 5.632q-14.336 0-32.256-5.12t-35.84-12.8-32.256-17.92-21.504-20.48q-5.12-7.168-5.632-16.896t7.68-27.136q11.264-23.552 8.704-53.76t-26.112-55.808q-14.336-15.36-34.816-19.968t-38.912-3.584q-21.504 1.024-44.032 8.192-14.336 4.096-28.672-2.048-11.264-4.096-20.992-18.944t-17.408-32.768-11.776-36.864-2.048-31.232q3.072-22.528 20.48-28.672 30.72-12.288 55.296-40.448t24.576-62.976q0-35.84-24.576-62.464t-55.296-38.912q-9.216-3.072-15.36-14.848t-6.144-24.064q0-13.312 4.096-29.696t10.752-31.744 15.36-28.16 18.944-18.944q8.192-5.12 15.872-4.096t16.896 4.096q30.72 12.288 64 7.68t58.88-29.184q12.288-12.288 17.92-30.208t7.168-35.328 0-31.744-2.56-20.48q-2.048-6.144-3.584-14.336t1.536-14.336q6.144-14.336 22.016-25.088t34.304-17.92 35.84-10.752 27.648-3.584q13.312 0 20.992 8.704t10.752 17.92q11.264 27.648 36.864 48.64t60.416 20.992q35.84 0 63.488-19.968t38.912-50.688q4.096-8.192 12.8-16.896t17.92-8.704q14.336 0 31.232 4.096t33.28 11.264 30.208 18.432 22.016 24.576q5.12 8.192 3.072 17.92t-4.096 13.824q-13.312 29.696-8.192 62.464t29.696 57.344 60.416 27.136 66.56-11.776q8.192-5.12 19.968-4.096t19.968 9.216q15.36 14.336 27.136 43.52t15.872 58.88q2.048 17.408-5.632 27.136t-15.872 12.8q-31.744 11.264-54.272 39.424t-22.528 64q0 34.816 18.944 60.928t49.664 37.376q7.168 4.096 12.288 8.192 11.264 9.216 15.36 23.552zM540.672 698.368q46.08 0 87.04-17.408t71.168-48.128 47.616-71.168 17.408-86.528-17.408-86.528-47.616-70.656-71.168-47.616-87.04-17.408-86.528 17.408-70.656 47.616-47.616 70.656-17.408 86.528 17.408 86.528 47.616 71.168 70.656 48.128 86.528 17.408z" p-id="5615"></path></svg>
+        </button>
+      </div>
+
+      <div class="card" id="stats-box">
+        <div style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;" id="stats-header">
+          <h3 style="margin: 0;">统计信息</h3>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="btn-refresh-stats" class="btn-icon" title="刷新统计" aria-label="刷新统计" onclick="event.stopPropagation();">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6"></path>
+                <path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"></path>
+                <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"></path>
+              </svg>
+            </button>
+            <span id="stats-toggle-icon" style="font-size: 1.2rem; user-select: none;">▼</span>
+          </div>
+        </div>
+        <div id="stats-content" style="display: none; margin-top: 16px;">
+          <pre id="stats-output" class="mono">点击"刷新统计"加载数据</pre>
+        </div>
+      </div>
+
+      <div class="card" style="height: calc(100vh - 400px);" id="docs-section">
+        <div class="chunks-head" style="margin-bottom: 12px;">
+          <h3>文档列表</h3>
+          <button id="btn-refresh-docs" class="btn-icon" title="刷新列表" aria-label="刷新列表">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6"></path>
+              <path d="M1 20v-6h6"></path>
+              <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"></path>
+              <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="chunks-filters" style="margin-bottom: 16px;">
+          <label class="field size-small">
+            <span>文件名搜索</span>
+            <input id="doc-search-query" type="text" placeholder="输入文件名关键词">
+          </label>
+          <label class="field size-small">
+            <span>排序方式</span>
+            <select id="doc-sort-by">
+              <option value="filename">文件名</option>
+              <option value="chunks_desc">分块数 (降序)</option>
+              <option value="chunks_asc">分块数 (升序)</option>
+              <option value="chars_desc">字符数 (降序)</option>
+              <option value="chars_asc">字符数 (升序)</option>
+            </select>
+          </label>
+          <div class="actions" style="align-self: end;">
+            <button id="btn-apply-doc-filter" type="button" class="btn size-small">应用筛选</button>
+            <button id="btn-clear-doc-filter" type="button" class="btn size-small">清除</button>
+          </div>
+        </div>
+        <table class="table" id="docs-table">
+          <thead>
+            <tr>
+              <th>文件名</th>
+              <th>分块数</th>
+              <th>字符数</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="docs-tbody">
+            <tr><td colspan="4">暂无数据</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </section>
+  </main>
+
+  <div id="chunk-dialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="dialog-panel" role="document">
+      <header class="dialog-header">
+        <div>
+          <p class="dialog-subtitle">分片编辑</p>
+          <h3 id="chunk-dialog-title">编辑分片</h3>
+        </div>
+        <button id="chunk-dialog-close" class="dialog-close" type="button" aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <label class="field full size-small">
+          <span>分片内容</span>
+          <textarea id="chunk-dialog-text" rows="10" placeholder="请输入分片内容"></textarea>
+        </label>
+      </div>
+      <footer class="dialog-footer">
+        <button id="chunk-dialog-cancel" class="btn size-small" type="button">取消</button>
+        <button id="chunk-dialog-save" class="btn primary size-small" type="button">保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 分片管理模态框 -->
+  <div id="chunk-manager-modal" class="modal">
+    <div class="modal-content chunk-manager-modal-content">
+      <div class="modal-header">
+        <h3>分片管理</h3>
+        <button class="modal-close" id="chunk-manager-modal-close-btn">&times;</button>
+      </div>
+      <div class="chunk-manager-body">
+        <div class="chunks-head">
+          <div class="field size-small" style="margin: 0; min-width: 320px;">
+            <span>当前文档</span>
+            <input id="chunk-selected-filename" type="text" readonly>
+          </div>
+          <div class="chunks-actions" style="display: flex; gap: 8px;">
+            <button id="btn-refresh-chunks" class="btn-icon" title="刷新分片" aria-label="刷新分片">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6"></path>
+                <path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"></path>
+                <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"></path>
+              </svg>
+            </button>
+            <button id="btn-delete-selected-document" class="btn danger size-small" type="button">删除所选文档</button>
+            <button id="btn-rebuild-chunks" class="btn danger size-small" type="button">重建分片</button>
+          </div>
+        </div>
+
+        <div class="chunks-filters">
+          <label class="field size-small">
+            <span>关键词搜索</span>
+            <input id="chunk-query" type="text" placeholder="输入关键词">
+          </label>
+          <label class="field size-small">
+            <span>每页数量</span>
+            <input id="chunk-page-size" type="number" min="1" value="8">
+          </label>
+          <div class="actions" style="align-self: end;">
+            <button id="btn-apply-chunk-filter" class="btn size-small">应用筛选</button>
+          </div>
+        </div>
+
+        <table class="table" id="chunks-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>文件名</th>
+              <th>内容摘要</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="chunks-tbody">
+            <tr><td colspan="4">暂无分片</td></tr>
+          </tbody>
+        </table>
+
+        <div class="chunks-pager">
+          <button id="btn-chunk-prev" class="btn size-small">上一页</button>
+          <span id="chunk-page-info">第 1 页</span>
+          <button id="btn-chunk-next" class="btn size-small">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新增文档模态框 -->
+  <div id="add-doc-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>新增文本文档</h3>
+        <button class="modal-close" id="add-doc-modal-close-btn">&times;</button>
+      </div>
+      <form id="doc-form" class="form-grid" style="padding: 24px;">
+        <label class="field size-small">
+          <span>文件名</span>
+          <input id="doc-filename" type="text" placeholder="example.md" required>
+        </label>
+        <label class="field full">
+          <span>文本内容</span>
+          <textarea id="doc-text" rows="8" placeholder="输入文档内容" required></textarea>
+        </label>
+        <div class="actions full">
+          <button type="submit" class="btn primary size-small">新增文档</button>
+          <button type="button" id="btn-cancel-add-doc" class="btn size-small">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 上传文件模态框 -->
+  <div id="upload-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>上传文件</h3>
+        <button class="modal-close" id="upload-modal-close-btn">&times;</button>
+      </div>
+      <form id="upload-form" class="form-grid" style="padding: 24px;">
+        <label class="field full">
+          <span>文件</span>
+          <input id="upload-file" type="file" required>
+        </label>
+        <label class="field size-small">
+          <span>文件名（可选）</span>
+          <input id="upload-filename" type="text" placeholder="留空使用原文件名">
+        </label>
+        <label class="field size-small">
+          <span>编码（可选）</span>
+          <input id="upload-encoding" type="text" placeholder="utf-8">
+        </label>
+        <div class="actions full">
+          <button type="submit" class="btn primary size-small">上传</button>
+          <button type="button" id="btn-cancel-upload" class="btn size-small">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 批量上传模态框 -->
+  <div id="batch-upload-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>批量上传文件</h3>
+        <button class="modal-close" id="batch-upload-modal-close-btn">&times;</button>
+      </div>
+      <form id="batch-upload-form" class="form-grid" style="padding: 24px;">
+        <label class="field full">
+          <span>文件</span>
+          <input id="batch-files" type="file" multiple required>
+        </label>
+        <label class="field size-small">
+          <span>编码（可选）</span>
+          <input id="batch-encoding" type="text" placeholder="utf-8">
+        </label>
+        <div class="actions full">
+          <button type="submit" class="btn primary size-small">批量上传</button>
+          <button type="button" id="btn-cancel-batch-upload" class="btn size-small">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 检索设置模态框 -->
+  <div id="retrieval-settings-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📊 检索设置</h3>
+        <button class="modal-close" id="retrieval-modal-close-btn">&times;</button>
+      </div>
+      <div style="padding: 24px;">
+        <p style="color: var(--muted); margin: 0 0 20px;">配置知识库检索参数,影响所有查询请求</p>
+        <div class="settings-grid">
+          <label class="field size-small">
+            <span>返回条数 (k)</span>
+            <input id="kb-k" type="number" min="1" max="20" value="2">
+            <small style="color: var(--muted); font-size: 0.85rem; display: block; margin-top: 4px;">控制检索返回的文档数量</small>
+          </label>
+          <label class="field size-small">
+            <span>相关性阈值</span>
+            <input id="kb-threshold" type="number" step="0.01" min="0.5" max="3.0" placeholder="留空则不过滤">
+            <small style="color: var(--muted); font-size: 0.85rem; display: block; margin-top: 4px;">建议范围 0.8-1.6,越小越严格</small>
+          </label>
+        </div>
+        <div class="actions" style="margin-top: 20px;">
+          <button id="btn-save-retrieval-settings" class="btn primary size-small">💾 保存设置</button>
+          <button id="btn-cancel-retrieval-modal" class="btn size-small">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/ui/app.js" defer></script>
+</body>
+</html>

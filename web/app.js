@@ -1,9 +1,4 @@
 ﻿const menuItems = Array.from(document.querySelectorAll('.menu-item'));
-const panels = {
-  chat: document.getElementById('panel-chat'),
-  kb: document.getElementById('panel-kb'),
-  model: document.getElementById('panel-model'),
-};
 const toast = document.getElementById('toast');
 const chunkState = {
   pageIndex: 1,
@@ -14,7 +9,8 @@ let documentsList = [];
 let modelConfigsList = [];
 const chatUserInput = document.getElementById('chat-user-id');
 const chatSessionInput = document.getElementById('chat-session-id');
-const resetSessionBtn = document.getElementById('btn-reset-session');
+const newSessionBtn = document.getElementById('btn-new-session');
+const clearHistoryBtn = document.getElementById('btn-clear-history');
 const chunkDialog = document.getElementById('chunk-dialog');
 const chunkDialogTitle = document.getElementById('chunk-dialog-title');
 const chunkDialogText = document.getElementById('chunk-dialog-text');
@@ -25,28 +21,79 @@ const chunkEditState = {
   id: null,
   filename: '',
 };
+const chunkManagerState = {
+  selectedFilename: '',
+};
+
+function renderKnowledgeSources(results = [], statusText = '') {
+  const list = document.getElementById('sources-list');
+  const title = document.getElementById('sources-title');
+  if (!list || !title) return;
+
+  const items = Array.isArray(results) ? results : [];
+  title.textContent = items.length > 0 ? `知识来源 (${items.length})` : '知识来源';
+  list.innerHTML = '';
+
+  if (statusText && items.length === 0) {
+    const loading = document.createElement('div');
+    loading.className = 'sources-empty';
+    loading.textContent = statusText;
+    list.appendChild(loading);
+    return;
+  }
+
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'sources-empty';
+    empty.textContent = '未检索到相关来源';
+    list.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item, idx) => {
+    const card = document.createElement('div');
+    card.className = 'source-item';
+
+    const header = document.createElement('div');
+    header.className = 'source-header';
+
+    const name = document.createElement('div');
+    name.className = 'source-name';
+    name.textContent = `${idx + 1}. ${String(item.filename || 'unknown')}`;
+
+    const score = document.createElement('div');
+    score.className = 'source-score';
+    const sim = item.similarity != null ? Number(item.similarity) : null;
+    score.textContent = sim == null || Number.isNaN(sim) ? '-' : `${(sim * 100).toFixed(1)}%`;
+
+    const text = document.createElement('div');
+    text.className = 'source-text';
+    text.textContent = String(item.text || item.chunk || item.content || '').slice(0, 180) || '（无内容预览）';
+
+    header.appendChild(name);
+    header.appendChild(score);
+    card.appendChild(header);
+    card.appendChild(text);
+    list.appendChild(card);
+  });
+}
 
 function showToast(message, ok = true) {
-  toast.textContent = message;
-  toast.className = `toast show ${ok ? 'ok' : 'err'}`;
+  toast.innerHTML = `
+    <div class="toast-overlay">
+      <div class="toast-dialog ${ok ? 'ok' : 'err'}">
+        <div class="toast-icon">${ok ? '✓' : '✕'}</div>
+        <div class="toast-message">${String(message).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        <button class="toast-close" onclick="this.closest('.toast').className='toast'">&times;</button>
+      </div>
+    </div>
+  `;
+  toast.className = 'toast show';
   window.clearTimeout(showToast._timer);
   showToast._timer = window.setTimeout(() => {
     toast.className = 'toast';
   }, 3200);
 }
-
-function switchTab(tab) {
-  for (const item of menuItems) {
-    item.classList.toggle('active', item.dataset.tab === tab);
-  }
-  Object.entries(panels).forEach(([name, panel]) => {
-    panel.classList.toggle('active', name === tab);
-  });
-}
-
-menuItems.forEach((btn) => {
-  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-});
 
 async function apiRequest(path, options = {}) {
   const init = { method: 'GET', ...options };
@@ -72,7 +119,8 @@ async function apiRequest(path, options = {}) {
 
 function addReferencesToMessage(results) {
   if (!Array.isArray(results) || results.length === 0) return;
-  
+  renderKnowledgeSources(results);
+
   const messagesContainer = document.getElementById('chat-messages');
   const messages = messagesContainer.querySelectorAll('.chat-message.assistant');
   if (messages.length === 0) return;
@@ -365,7 +413,11 @@ function loadSessionToChat(session) {
   
   // 滚动到底部
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
-  
+
+  const last = items[items.length - 1] || {};
+  const lastResults = last?.response?.results || [];
+  renderKnowledgeSources(lastResults);
+
   showToast(`已加载会话（${items.length}条对话）`);
 }
 
@@ -522,8 +574,10 @@ function loadSessionToChat(session) {
   
   // 滚动到底部
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
-  
-  showToast(`已加载会话（${items.length}条对话）`);
+
+  const last = items[items.length - 1] || {};
+  const lastResults = last?.response?.results || [];
+  renderKnowledgeSources(lastResults);
 }
 
 function loadHistoryToChat(historyItem) {
@@ -656,8 +710,7 @@ function loadHistoryToChat(historyItem) {
   
   // 滚动到底部
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
-  
-  showToast('已加载历史对话');
+  renderKnowledgeSources(results);
 }
 
 
@@ -682,55 +735,25 @@ function renderHistory(history) {
     list.innerHTML = '<li class="history-item history-empty">暂无历史</li>';
     return;
   }
-  for (const session of history) {
+  
+  // 只显示前20条
+  const displayHistory = history.slice(0, 20);
+  
+  for (const session of displayHistory) {
     const li = document.createElement('li');
     li.className = 'history-item';
     
+    // 显示第一个问题作为标题
+    const firstQuery = session.first_query || pickHistoryTitle(session.items?.[0] || {});
+    const displayTitle = String(firstQuery).trim();
+    li.textContent = displayTitle;
+    li.title = displayTitle; // 鼠标悬停显示完整文本
+    
     // 添加点击事件，显示整个session的对话
     li.addEventListener('click', (e) => {
-      // 如果点击的是删除按钮，不触发查看功能
-      if (e.target.classList.contains('history-delete')) {
-        return;
-      }
       loadSessionToChat(session);
     });
     
-    const head = document.createElement('div');
-    head.className = 'history-row';
-    const title = document.createElement('div');
-    title.className = 'history-title';
-    // 显示第一个问题作为标题
-    const firstQuery = session.first_query || pickHistoryTitle(session.items?.[0] || {});
-    const displayTitle = String(firstQuery).slice(0, 40);
-    title.textContent = displayTitle + (session.count > 1 ? ` (共${session.count}条)` : '');
-    head.appendChild(title);
-
-    // 删除按钮 - 删除整个session的所有记录
-    if (session.session_id) {
-      const delBtn = document.createElement('button');
-      delBtn.className = 'history-delete';
-      delBtn.type = 'button';
-      delBtn.textContent = '删除';
-      delBtn.addEventListener('click', async (e) => {
-        e.stopPropagation(); // 阻止事件冒泡
-        const ok = window.confirm(`确定删除该会话的所有${session.count}条记录吗？`);
-        if (!ok) return;
-        try {
-          // 使用新的 DELETE /session/{session_id} API
-          await apiRequest(`/session/${encodeURIComponent(session.session_id)}`, { method: 'DELETE' });
-          showToast('会话记录已删除');
-          await refreshHistory();
-        } catch (err) {
-          showToast(err.message || '删除失败', false);
-        }
-      });
-      head.appendChild(delBtn);
-    }
-    const meta = document.createElement('div');
-    meta.className = 'history-meta';
-    meta.textContent = `${formatHistoryTime(session?.timestamp)} · ${session?.user_id || 'unknown'}`;
-    li.appendChild(head);
-    li.appendChild(meta);
     list.appendChild(li);
   }
 }
@@ -751,12 +774,13 @@ async function runChat(event) {
 
   const k = Number(document.getElementById('chat-k').value || 2);
   const thresholdRaw = document.getElementById('chat-threshold').value.trim();
-  const generateAnswer = document.getElementById('chat-generate').checked;
+  const generateAnswer = document.getElementById('chat-generate').value === 'true';
   const deepThink = document.getElementById('chat-deep-think').checked;
   
   // 添加用户消息到聊天框
   addUserMessage(query);
-  
+  renderKnowledgeSources([], '正在检索知识来源...');
+
   // 立即显示AI等待消息
   addAssistantMessage('', true);
   
@@ -773,7 +797,7 @@ async function runChat(event) {
     user_id: userId,
   };
   const selectedModelConfigId = document.getElementById('chat-model-config')?.value?.trim() || '';
-  const useDefaultModelConfig = Boolean(document.getElementById('chat-use-default-model')?.checked);
+  const useDefaultModelConfig = document.getElementById('chat-use-default-model')?.value === 'true';
   if (useDefaultModelConfig) {
     body.use_default_model_config = true;
   } else if (selectedModelConfigId) {
@@ -806,7 +830,6 @@ async function runChat(event) {
   try {
     await runChatStream(body);
     refreshHistory().catch(() => {});
-    showToast('查询完成');
   } catch (error) {
     addAssistantMessage('抱歉，查询失败。请稍后重试。');
     showToast(error.message || '请求失败', false);
@@ -977,7 +1000,9 @@ async function runChatStream(body) {
       return;
     }
     if (eventType === 'meta') {
-      addReferencesToMessage(payload.results || []);
+      const refs = payload.results || [];
+      addReferencesToMessage(refs);
+      renderKnowledgeSources(refs);
       if (payload.session_id) {
         chatSessionInput.value = String(payload.session_id);
       }
@@ -1046,6 +1071,107 @@ function resetModelForm() {
   document.getElementById('model-is-default').checked = false;
 }
 
+function openModelModal(isEdit = false) {
+  const modal = document.getElementById('model-config-modal');
+  const title = document.getElementById('modal-title');
+  if (!modal) return;
+  
+  if (title) {
+    title.textContent = isEdit ? '编辑模型配置' : '新增模型配置';
+  }
+  
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModelModal() {
+  const modal = document.getElementById('model-config-modal');
+  if (!modal) return;
+  
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function openRetrievalSettingsModal() {
+  const modal = document.getElementById('retrieval-settings-modal');
+  if (!modal) return;
+  
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeRetrievalSettingsModal() {
+  const modal = document.getElementById('retrieval-settings-modal');
+  if (!modal) return;
+  
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function openAddDocModal() {
+  const modal = document.getElementById('add-doc-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeAddDocModal() {
+  const modal = document.getElementById('add-doc-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function openUploadModal() {
+  const modal = document.getElementById('upload-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeUploadModal() {
+  const modal = document.getElementById('upload-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function openBatchUploadModal() {
+  const modal = document.getElementById('batch-upload-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeBatchUploadModal() {
+  const modal = document.getElementById('batch-upload-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+function openChunkManagerModal(filename = '') {
+  const modal = document.getElementById('chunk-manager-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  chunkManagerState.selectedFilename = String(filename || '').trim();
+  const selectedInput = document.getElementById('chunk-selected-filename');
+  if (selectedInput) selectedInput.value = chunkManagerState.selectedFilename;
+
+  const queryInput = document.getElementById('chunk-query');
+  if (queryInput) queryInput.value = '';
+  chunkState.pageIndex = 1;
+  refreshChunks().catch((err) => showToast(err.message, false));
+}
+
+function closeChunkManagerModal() {
+  const modal = document.getElementById('chunk-manager-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
 function fillModelForm(config) {
   if (!config) return;
   document.getElementById('model-config-id').value = String(config.id ?? '');
@@ -1060,6 +1186,7 @@ function fillModelForm(config) {
   document.getElementById('model-description').value = String(config.description || '');
   document.getElementById('model-is-active').checked = Boolean(config.is_active);
   document.getElementById('model-is-default').checked = Boolean(config.is_default);
+  openModelModal(true);
 }
 
 function renderProviderOptions(providers) {
@@ -1127,7 +1254,6 @@ function renderModelConfigsTable(configs) {
     editBtn.textContent = '编辑';
     editBtn.addEventListener('click', () => {
       fillModelForm(cfg);
-      showToast(`已载入配置：${cfg.name}`);
     });
 
     const testBtn = document.createElement('button');
@@ -1227,6 +1353,7 @@ async function submitModelConfig(event) {
   }
 
   await refreshModelConfigs();
+  closeModelModal();
   resetModelForm();
 }
 
@@ -1254,6 +1381,50 @@ async function testModelConfig(id) {
   }
 }
 
+// 检索设置管理
+function saveRetrievalSettings() {
+  const kInput = document.getElementById('kb-k');
+  const thresholdInput = document.getElementById('kb-threshold');
+  
+  const k = Number(kInput.value || 2);
+  const threshold = thresholdInput.value.trim();
+  
+  if (!Number.isFinite(k) || k < 1 || k > 20) {
+    showToast('返回条数必须在 1-20 之间', false);
+    return;
+  }
+  
+  // 保存到 localStorage
+  localStorage.setItem('retrieval_k', String(k));
+  localStorage.setItem('retrieval_threshold', threshold);
+  
+  // 同步到聊天页面的隐藏字段（如果存在）
+  const chatKInput = document.getElementById('chat-k');
+  const chatThresholdInput = document.getElementById('chat-threshold');
+  if (chatKInput) chatKInput.value = k;
+  if (chatThresholdInput) chatThresholdInput.value = threshold;
+  
+  closeRetrievalSettingsModal();
+  showToast('检索设置已保存');
+}
+
+function loadRetrievalSettings() {
+  const savedK = localStorage.getItem('retrieval_k') || '2';
+  const savedThreshold = localStorage.getItem('retrieval_threshold') || '';
+  
+  // 设置知识库管理页面的值
+  const kbKInput = document.getElementById('kb-k');
+  const kbThresholdInput = document.getElementById('kb-threshold');
+  if (kbKInput) kbKInput.value = savedK;
+  if (kbThresholdInput) kbThresholdInput.value = savedThreshold;
+  
+  // 同步到聊天页面的隐藏字段（如果存在）
+  const chatKInput = document.getElementById('chat-k');
+  const chatThresholdInput = document.getElementById('chat-threshold');
+  if (chatKInput) chatKInput.value = savedK;
+  if (chatThresholdInput) chatThresholdInput.value = savedThreshold;
+}
+
 async function bootstrapModelConfigs() {
   const data = await apiRequest('/model/config/bootstrap', { method: 'POST', body: {} });
   const created = Number(data.count_created || 0);
@@ -1264,47 +1435,54 @@ async function bootstrapModelConfigs() {
 
 function renderDocsTable(documents) {
   const tbody = document.getElementById('docs-tbody');
+  if (!tbody) return;
+  
   tbody.innerHTML = '';
   if (!Array.isArray(documents) || documents.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3">暂无文档</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4">暂无文档</td></tr>';
     documentsList = [];
   } else {
     for (const doc of documents) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${String(doc.filename || '')}</td><td>${Number(doc.chunk_count || 0)}</td><td>${Number(doc.char_count || 0)}</td>`;
+      tr.innerHTML = `
+        <td>${String(doc.filename || '')}</td>
+        <td>${Number(doc.chunk_count || 0)}</td>
+        <td>${Number(doc.char_count || 0)}</td>
+        <td></td>
+      `;
+      
+      const actionCell = tr.lastElementChild;
+      const chunkManageBtn = document.createElement('button');
+      chunkManageBtn.className = 'chunks-action-btn';
+      chunkManageBtn.textContent = '分片管理';
+      chunkManageBtn.addEventListener('click', () => {
+        const filename = String(doc.filename || '').trim();
+        if (!filename) {
+          showToast('文件名无效', false);
+          return;
+        }
+        openChunkManagerModal(filename);
+      });
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'chunks-action-btn danger';
+      deleteBtn.textContent = '删除';
+      deleteBtn.addEventListener('click', () => {
+        const ok = window.confirm(`确定删除文档 ${doc.filename} 吗？`);
+        if (!ok) return;
+        deleteDocument(doc.filename).catch((err) => showToast(err.message, false));
+      });
+
+      actionCell.style.display = 'flex';
+      actionCell.style.gap = '8px';
+      actionCell.style.flexWrap = 'wrap';
+      actionCell.appendChild(chunkManageBtn);
+      actionCell.appendChild(deleteBtn);
       tbody.appendChild(tr);
     }
     documentsList = documents;
   }
   
-  // 更新分片筛选下拉列表
-  updateChunkFilenameSelect();
-}
-
-function updateChunkFilenameSelect() {
-  const select = document.getElementById('chunk-filename');
-  const currentValue = select.value;
-  
-  // 保留"全部文档"选项
-  select.innerHTML = '<option value="">-- 全部文档 --</option>';
-  
-  // 添加文档选项
-  if (Array.isArray(documentsList) && documentsList.length > 0) {
-    for (const doc of documentsList) {
-      const option = document.createElement('option');
-      option.value = String(doc.filename || '');
-      option.textContent = String(doc.filename || '');
-      select.appendChild(option);
-    }
-    
-    // 如果之前没有选择或者选择的文件不存在了，默认选择第一个文档
-    if (!currentValue || !documentsList.some(d => d.filename === currentValue)) {
-      select.value = String(documentsList[0].filename || '');
-      // 触发自动应用筛选
-      chunkState.pageIndex = 1;
-      refreshChunks().catch((err) => showToast(err.message, false));
-    }
-  }
 }
 
 function truncateText(text, maxLen = 120) {
@@ -1388,7 +1566,7 @@ async function confirmChunkDialog() {
 }
 
 function getChunkFilters() {
-  const filename = document.getElementById('chunk-filename').value.trim();
+  const filename = String(chunkManagerState.selectedFilename || '').trim();
   const query = document.getElementById('chunk-query').value.trim();
   const pageSizeRaw = Number(document.getElementById('chunk-page-size').value || 8);
   const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.floor(pageSizeRaw) : 8;
@@ -1398,6 +1576,12 @@ function getChunkFilters() {
 
 async function refreshChunks() {
   const { filename, query } = getChunkFilters();
+  if (!filename) {
+    renderChunksTable([]);
+    chunkState.total = 0;
+    document.getElementById('chunk-page-info').textContent = '第 1 / 1 页';
+    return;
+  }
   const params = new URLSearchParams();
   params.set('pageIndex', String(chunkState.pageIndex));
   params.set('pageSize', String(chunkState.pageSize));
@@ -1432,12 +1616,12 @@ async function deleteChunk(id) {
 }
 
 async function rebuildChunks() {
-  const filename = document.getElementById('chunk-rebuild-filename').value.trim();
+  const filename = String(chunkManagerState.selectedFilename || '').trim();
   if (!filename) {
-    showToast('请输入文件名', false);
+    showToast('请先在文档列表中选择“分片管理”文档', false);
     return;
   }
-  const ok = window.confirm('将按当前分片规则重建该文件的分片，是否继续？');
+  const ok = window.confirm(`将按当前分片规则重建文档 ${filename} 的分片，是否继续？`);
   if (!ok) return;
   const data = await apiRequest('/kb/chunks/rebuild', {
     method: 'POST',
@@ -1451,14 +1635,53 @@ async function rebuildChunks() {
 
 async function refreshDocuments() {
   const data = await apiRequest('/kb/documents');
-  renderDocsTable(data.documents || []);
-  showToast(`已加载 ${Number(data.count || 0)} 个文档`);
+  const documents = data.documents || [];
+  // 保存原始数据用于筛选
+  window.allDocuments = documents;
+  applyDocumentFilters(documents);
+}
+
+function applyDocumentFilters(documents) {
+  if (!Array.isArray(documents)) {
+    renderDocsTable([]);
+    return;
+  }
+  
+  let filtered = [...documents];
+  
+  // 文件名搜索
+  const searchQuery = document.getElementById('doc-search-query')?.value?.trim().toLowerCase();
+  if (searchQuery) {
+    filtered = filtered.filter(doc => 
+      String(doc.filename || '').toLowerCase().includes(searchQuery)
+    );
+  }
+  
+  // 排序
+  const sortBy = document.getElementById('doc-sort-by')?.value || 'filename';
+  filtered.sort((a, b) => {
+    switch (sortBy) {
+      case 'filename':
+        return String(a.filename || '').localeCompare(String(b.filename || ''));
+      case 'chunks_desc':
+        return Number(b.chunk_count || 0) - Number(a.chunk_count || 0);
+      case 'chunks_asc':
+        return Number(a.chunk_count || 0) - Number(b.chunk_count || 0);
+      case 'chars_desc':
+        return Number(b.char_count || 0) - Number(a.char_count || 0);
+      case 'chars_asc':
+        return Number(a.char_count || 0) - Number(b.char_count || 0);
+      default:
+        return 0;
+    }
+  });
+  
+  renderDocsTable(filtered);
 }
 
 async function refreshStats() {
   const data = await apiRequest('/stats');
   document.getElementById('stats-output').textContent = JSON.stringify(data.stats || {}, null, 2);
-  showToast('统计已刷新');
 }
 
 async function addDocument(event) {
@@ -1475,6 +1698,7 @@ async function addDocument(event) {
   });
   showToast(`新增成功，chunks=${Number(data.chunks_added || 0)}`);
   event.target.reset();
+  closeAddDocModal();
   await refreshDocuments();
   await refreshStats();
 }
@@ -1498,6 +1722,7 @@ async function uploadFile(event) {
   const data = await apiRequest('/kb/file', { method: 'POST', body: formData });
   showToast(`上传成功，chunks=${Number(data.chunks_added || 0)}`);
   event.target.reset();
+  closeUploadModal();
   await refreshDocuments();
   await refreshStats();
 }
@@ -1522,13 +1747,12 @@ async function uploadBatchFiles(event) {
   const data = await apiRequest('/kb/files', { method: 'POST', body: formData });
   showToast(`批量上传完成，chunks=${Number(data.chunks_added || 0)}`);
   event.target.reset();
+  closeBatchUploadModal();
   await refreshDocuments();
   await refreshStats();
 }
 
-async function deleteDocument(event) {
-  event.preventDefault();
-  const filename = document.getElementById('delete-filename').value.trim();
+async function deleteDocument(filename) {
   if (!filename) {
     showToast('文件名不能为空', false);
     return;
@@ -1538,7 +1762,6 @@ async function deleteDocument(event) {
     method: 'DELETE',
   });
   showToast(`删除完成，removed=${Number(data.chunks_removed || 0)}`);
-  event.target.reset();
   await refreshDocuments();
   await refreshStats();
 }
@@ -1553,110 +1776,402 @@ async function clearKnowledgeBase() {
 }
 
 function bindEvents() {
-  document.getElementById('chat-form').addEventListener('submit', runChat);
-  document.getElementById('doc-form').addEventListener('submit', (e) => addDocument(e).catch((err) => showToast(err.message, false)));
-  document.getElementById('upload-form').addEventListener('submit', (e) => uploadFile(e).catch((err) => showToast(err.message, false)));
-  document.getElementById('batch-upload-form').addEventListener('submit', (e) => uploadBatchFiles(e).catch((err) => showToast(err.message, false)));
-  document.getElementById('delete-form').addEventListener('submit', (e) => deleteDocument(e).catch((err) => showToast(err.message, false)));
-
-  document.getElementById('btn-refresh-docs').addEventListener('click', () => {
-    refreshDocuments().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-refresh-stats').addEventListener('click', () => {
-    refreshStats().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-clear-kb').addEventListener('click', () => {
-    clearKnowledgeBase().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-refresh-history').addEventListener('click', () => {
-    refreshHistory().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-refresh-chunks').addEventListener('click', () => {
-    refreshChunks().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('chunk-filename').addEventListener('change', () => {
-    chunkState.pageIndex = 1;
-    refreshChunks().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-apply-chunk-filter').addEventListener('click', () => {
-    chunkState.pageIndex = 1;
-    refreshChunks().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-chunk-prev').addEventListener('click', () => {
-    if (chunkState.pageIndex > 1) {
-      chunkState.pageIndex -= 1;
-      refreshChunks().catch((err) => showToast(err.message, false));
-    }
-  });
-  document.getElementById('btn-chunk-next').addEventListener('click', () => {
-    const pageCount = Math.max(1, Math.ceil(chunkState.total / chunkState.pageSize));
-    if (chunkState.pageIndex < pageCount) {
-      chunkState.pageIndex += 1;
-      refreshChunks().catch((err) => showToast(err.message, false));
-    }
-  });
-  document.getElementById('btn-rebuild-chunks').addEventListener('click', () => {
-    rebuildChunks().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('model-config-form').addEventListener('submit', (e) => {
-    submitModelConfig(e).catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-reset-model-form').addEventListener('click', resetModelForm);
-  document.getElementById('btn-refresh-model-configs').addEventListener('click', () => {
-    refreshModelConfigs().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('btn-bootstrap-model-configs').addEventListener('click', () => {
-    bootstrapModelConfigs().catch((err) => showToast(err.message, false));
-  });
-  document.getElementById('chat-use-default-model').addEventListener('change', (e) => {
-    const select = document.getElementById('chat-model-config');
-    if (select) {
-      select.disabled = Boolean(e.target.checked);
-    }
-  });
-
-  resetSessionBtn.addEventListener('click', () => {
-    const userId = chatUserInput.value.trim();
-    if (!userId) {
+  // 聊天页面事件
+  const chatForm = document.getElementById('chat-form');
+  if (chatForm) chatForm.addEventListener('submit', runChat);
+  
+  if (newSessionBtn) {
+    newSessionBtn.addEventListener('click', () => {
+      const userId = chatUserInput.value.trim();
+      if (!userId) {
+        chatSessionInput.value = '';
+        showToast('用户ID不能为空', false);
+        return;
+      }
+      ensureSessionId(userId)
+        .then(() => {
+          const messagesContainer = document.getElementById('chat-messages');
+          messagesContainer.innerHTML = '<div class="chat-welcome"><p>开始提问吧！基于知识库的智能问答系统已就绪。</p></div>';
+          renderKnowledgeSources([]);
+        })
+        .catch((err) => showToast(err.message, false));
+    });
+  }
+  
+  if (clearHistoryBtn) {
+    clearHistoryBtn.addEventListener('click', async () => {
+      if (!confirm('确定要清空所有历史记录吗？此操作不可恢复。')) {
+        return;
+      }
+      try {
+        const userId = chatUserInput.value.trim();
+        if (!userId) {
+          showToast('用户ID不能为空', false);
+          return;
+        }
+        await refreshHistory();
+        showToast('历史记录已清空');
+      } catch (err) {
+        showToast(err.message || '清空失败', false);
+      }
+    });
+  }
+  
+  if (chatUserInput) {
+    chatUserInput.addEventListener('change', () => {
       chatSessionInput.value = '';
-      showToast('用户ID不能为空', false);
-      return;
-    }
-    ensureSessionId(userId)
-      .then(() => {
-        // 清空聊天消息内容
-        const messagesContainer = document.getElementById('chat-messages');
-        messagesContainer.innerHTML = '<div class="chat-welcome"><p>开始提问吧！基于知识库的智能问答系统已就绪。</p></div>';
-        showToast('已创建新会话');
-      })
-      .catch((err) => showToast(err.message, false));
-  });
-  chatUserInput.addEventListener('change', () => {
-    chatSessionInput.value = '';
-  });
+    });
+  }
 
-  chunkDialogClose.addEventListener('click', closeChunkDialog);
-  chunkDialogCancel.addEventListener('click', closeChunkDialog);
-  chunkDialogSave.addEventListener('click', () => {
-    confirmChunkDialog().catch((err) => showToast(err.message, false));
-  });
-  chunkDialog.addEventListener('click', (event) => {
-    if (event.target === chunkDialog) {
+  // 知识库管理页面事件
+  const btnOpenAddDoc = document.getElementById('btn-open-add-doc');
+  if (btnOpenAddDoc) {
+    btnOpenAddDoc.addEventListener('click', openAddDocModal);
+  }
+  
+  const addDocModalCloseBtn = document.getElementById('add-doc-modal-close-btn');
+  if (addDocModalCloseBtn) {
+    addDocModalCloseBtn.addEventListener('click', closeAddDocModal);
+  }
+  
+  const btnCancelAddDoc = document.getElementById('btn-cancel-add-doc');
+  if (btnCancelAddDoc) {
+    btnCancelAddDoc.addEventListener('click', closeAddDocModal);
+  }
+  
+  const addDocModal = document.getElementById('add-doc-modal');
+  if (addDocModal) {
+    addDocModal.addEventListener('click', (event) => {
+      if (event.target === addDocModal) {
+        closeAddDocModal();
+      }
+    });
+  }
+  
+  const btnOpenUpload = document.getElementById('btn-open-upload');
+  if (btnOpenUpload) {
+    btnOpenUpload.addEventListener('click', openUploadModal);
+  }
+  
+  const uploadModalCloseBtn = document.getElementById('upload-modal-close-btn');
+  if (uploadModalCloseBtn) {
+    uploadModalCloseBtn.addEventListener('click', closeUploadModal);
+  }
+  
+  const btnCancelUpload = document.getElementById('btn-cancel-upload');
+  if (btnCancelUpload) {
+    btnCancelUpload.addEventListener('click', closeUploadModal);
+  }
+  
+  const uploadModal = document.getElementById('upload-modal');
+  if (uploadModal) {
+    uploadModal.addEventListener('click', (event) => {
+      if (event.target === uploadModal) {
+        closeUploadModal();
+      }
+    });
+  }
+  
+  const btnOpenBatchUpload = document.getElementById('btn-open-batch-upload');
+  if (btnOpenBatchUpload) {
+    btnOpenBatchUpload.addEventListener('click', openBatchUploadModal);
+  }
+  
+  const batchUploadModalCloseBtn = document.getElementById('batch-upload-modal-close-btn');
+  if (batchUploadModalCloseBtn) {
+    batchUploadModalCloseBtn.addEventListener('click', closeBatchUploadModal);
+  }
+  
+  const btnCancelBatchUpload = document.getElementById('btn-cancel-batch-upload');
+  if (btnCancelBatchUpload) {
+    btnCancelBatchUpload.addEventListener('click', closeBatchUploadModal);
+  }
+  
+  const batchUploadModal = document.getElementById('batch-upload-modal');
+  if (batchUploadModal) {
+    batchUploadModal.addEventListener('click', (event) => {
+      if (event.target === batchUploadModal) {
+        closeBatchUploadModal();
+      }
+    });
+  }
+  
+  const docForm = document.getElementById('doc-form');
+  if (docForm) docForm.addEventListener('submit', (e) => addDocument(e).catch((err) => showToast(err.message, false)));
+  
+  const uploadForm = document.getElementById('upload-form');
+  if (uploadForm) uploadForm.addEventListener('submit', (e) => uploadFile(e).catch((err) => showToast(err.message, false)));
+  
+  const batchUploadForm = document.getElementById('batch-upload-form');
+  if (batchUploadForm) batchUploadForm.addEventListener('submit', (e) => uploadBatchFiles(e).catch((err) => showToast(err.message, false)));
+
+  const btnRefreshDocs = document.getElementById('btn-refresh-docs');
+  if (btnRefreshDocs) {
+    btnRefreshDocs.addEventListener('click', async () => {
+      try {
+        await refreshDocuments();
+        showToast('文档列表已刷新');
+      } catch (err) {
+        showToast(err.message, false);
+      }
+    });
+  }
+
+  const btnApplyDocFilter = document.getElementById('btn-apply-doc-filter');
+  if (btnApplyDocFilter) {
+    btnApplyDocFilter.addEventListener('click', () => {
+      if (window.allDocuments) {
+        applyDocumentFilters(window.allDocuments);
+      }
+    });
+  }
+
+  const btnClearDocFilter = document.getElementById('btn-clear-doc-filter');
+  if (btnClearDocFilter) {
+    btnClearDocFilter.addEventListener('click', () => {
+      const searchInput = document.getElementById('doc-search-query');
+      const sortSelect = document.getElementById('doc-sort-by');
+      if (searchInput) searchInput.value = '';
+      if (sortSelect) sortSelect.value = 'filename';
+      if (window.allDocuments) {
+        applyDocumentFilters(window.allDocuments);
+      }
+    });
+  }
+
+  const docSearchQuery = document.getElementById('doc-search-query');
+  if (docSearchQuery) {
+    docSearchQuery.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && window.allDocuments) {
+        applyDocumentFilters(window.allDocuments);
+      }
+    });
+  }
+  
+  const btnRefreshStats = document.getElementById('btn-refresh-stats');
+  if (btnRefreshStats) {
+    btnRefreshStats.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      try {
+        await refreshStats();
+        showToast('统计信息已刷新');
+      } catch (err) {
+        showToast(err.message, false);
+      }
+    });
+  }
+  
+  const btnClearKb = document.getElementById('btn-clear-kb');
+  if (btnClearKb) {
+    btnClearKb.addEventListener('click', () => {
+      clearKnowledgeBase().catch((err) => showToast(err.message, false));
+    });
+  }
+  
+  const btnRefreshChunks = document.getElementById('btn-refresh-chunks');
+  if (btnRefreshChunks) {
+    btnRefreshChunks.addEventListener('click', async () => {
+      try {
+        await refreshChunks();
+        showToast('分片列表已刷新');
+      } catch (err) {
+        showToast(err.message, false);
+      }
+    });
+  }
+  
+  const chunkQuery = document.getElementById('chunk-query');
+  if (chunkQuery) {
+    chunkQuery.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        chunkState.pageIndex = 1;
+        refreshChunks().catch((err) => showToast(err.message, false));
+      }
+    });
+  }
+  
+  const btnApplyChunkFilter = document.getElementById('btn-apply-chunk-filter');
+  if (btnApplyChunkFilter) {
+    btnApplyChunkFilter.addEventListener('click', () => {
+      chunkState.pageIndex = 1;
+      refreshChunks().catch((err) => showToast(err.message, false));
+    });
+  }
+  
+  const btnChunkPrev = document.getElementById('btn-chunk-prev');
+  if (btnChunkPrev) {
+    btnChunkPrev.addEventListener('click', () => {
+      if (chunkState.pageIndex > 1) {
+        chunkState.pageIndex -= 1;
+        refreshChunks().catch((err) => showToast(err.message, false));
+      }
+    });
+  }
+  
+  const btnChunkNext = document.getElementById('btn-chunk-next');
+  if (btnChunkNext) {
+    btnChunkNext.addEventListener('click', () => {
+      const pageCount = Math.max(1, Math.ceil(chunkState.total / chunkState.pageSize));
+      if (chunkState.pageIndex < pageCount) {
+        chunkState.pageIndex += 1;
+        refreshChunks().catch((err) => showToast(err.message, false));
+      }
+    });
+  }
+  
+  const btnRebuildChunks = document.getElementById('btn-rebuild-chunks');
+  if (btnRebuildChunks) {
+    btnRebuildChunks.addEventListener('click', () => {
+      rebuildChunks().catch((err) => showToast(err.message, false));
+    });
+  }
+
+  const btnDeleteSelectedDocument = document.getElementById('btn-delete-selected-document');
+  if (btnDeleteSelectedDocument) {
+    btnDeleteSelectedDocument.addEventListener('click', () => {
+      const selected = String(chunkManagerState.selectedFilename || '').trim();
+      if (!selected) {
+        showToast('请先在文档列表中选择“分片管理”文档', false);
+        return;
+      }
+      const ok = window.confirm(`确定删除所选文档 ${selected} 吗？`);
+      if (!ok) return;
+      deleteDocument(selected)
+        .then(async () => {
+          chunkManagerState.selectedFilename = '';
+          await refreshDocuments();
+          await refreshChunks();
+        })
+        .catch((err) => showToast(err.message, false));
+    });
+  }
+  
+  const btnSaveRetrievalSettings = document.getElementById('btn-save-retrieval-settings');
+  if (btnSaveRetrievalSettings) {
+    btnSaveRetrievalSettings.addEventListener('click', () => {
+      saveRetrievalSettings();
+    });
+  }
+  
+  const btnOpenRetrievalSettings = document.getElementById('btn-open-retrieval-settings');
+  if (btnOpenRetrievalSettings) {
+    btnOpenRetrievalSettings.addEventListener('click', openRetrievalSettingsModal);
+  }
+  
+  const retrievalModalCloseBtn = document.getElementById('retrieval-modal-close-btn');
+  if (retrievalModalCloseBtn) {
+    retrievalModalCloseBtn.addEventListener('click', closeRetrievalSettingsModal);
+  }
+  
+  const btnCancelRetrievalModal = document.getElementById('btn-cancel-retrieval-modal');
+  if (btnCancelRetrievalModal) {
+    btnCancelRetrievalModal.addEventListener('click', closeRetrievalSettingsModal);
+  }
+  
+  const retrievalSettingsModal = document.getElementById('retrieval-settings-modal');
+  if (retrievalSettingsModal) {
+    retrievalSettingsModal.addEventListener('click', (event) => {
+      if (event.target === retrievalSettingsModal) {
+        closeRetrievalSettingsModal();
+      }
+    });
+  }
+
+  const chunkManagerModalCloseBtn = document.getElementById('chunk-manager-modal-close-btn');
+  if (chunkManagerModalCloseBtn) {
+    chunkManagerModalCloseBtn.addEventListener('click', closeChunkManagerModal);
+  }
+
+  const chunkManagerModal = document.getElementById('chunk-manager-modal');
+  if (chunkManagerModal) {
+    chunkManagerModal.addEventListener('click', (event) => {
+      if (event.target === chunkManagerModal) {
+        closeChunkManagerModal();
+      }
+    });
+  }
+
+  // 模型管理页面事件
+  const modelConfigForm = document.getElementById('model-config-form');
+  if (modelConfigForm) {
+    modelConfigForm.addEventListener('submit', (e) => {
+      submitModelConfig(e).catch((err) => showToast(err.message, false));
+    });
+  }
+  
+  const btnAddModel = document.getElementById('btn-add-model');
+  if (btnAddModel) {
+    btnAddModel.addEventListener('click', () => {
+      resetModelForm();
+      openModelModal(false);
+    });
+  }
+  
+  const modalCloseBtn = document.getElementById('modal-close-btn');
+  if (modalCloseBtn) {
+    modalCloseBtn.addEventListener('click', closeModelModal);
+  }
+  
+  const btnCancelModal = document.getElementById('btn-cancel-modal');
+  if (btnCancelModal) {
+    btnCancelModal.addEventListener('click', closeModelModal);
+  }
+  
+  const modelConfigModal = document.getElementById('model-config-modal');
+  if (modelConfigModal) {
+    modelConfigModal.addEventListener('click', (event) => {
+      if (event.target === modelConfigModal) {
+        closeModelModal();
+      }
+    });
+  }
+  
+  const btnRefreshModelConfigs = document.getElementById('btn-refresh-model-configs');
+  if (btnRefreshModelConfigs) {
+    btnRefreshModelConfigs.addEventListener('click', () => {
+      refreshModelConfigs().catch((err) => showToast(err.message, false));
+    });
+  }
+  
+  const btnBootstrapModelConfigs = document.getElementById('btn-bootstrap-model-configs');
+  if (btnBootstrapModelConfigs) {
+    btnBootstrapModelConfigs.addEventListener('click', () => {
+      bootstrapModelConfigs().catch((err) => showToast(err.message, false));
+    });
+  }
+
+  // 分片对话框事件
+  if (chunkDialogClose) chunkDialogClose.addEventListener('click', closeChunkDialog);
+  if (chunkDialogCancel) chunkDialogCancel.addEventListener('click', closeChunkDialog);
+  if (chunkDialogSave) {
+    chunkDialogSave.addEventListener('click', () => {
+      confirmChunkDialog().catch((err) => showToast(err.message, false));
+    });
+  }
+  if (chunkDialog) {
+    chunkDialog.addEventListener('click', (event) => {
+      if (event.target === chunkDialog) {
+        closeChunkDialog();
+      }
+    });
+  }
+  
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && chunkDialog && chunkDialog.classList.contains('open')) {
       closeChunkDialog();
     }
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && chunkDialog.classList.contains('open')) {
-      closeChunkDialog();
+    const chunkManagerModal = document.getElementById('chunk-manager-modal');
+    if (event.key === 'Escape' && chunkManagerModal && chunkManagerModal.classList.contains('show')) {
+      closeChunkManagerModal();
     }
   });
 }
 
 async function bootstrap() {
   bindEvents();
-  switchTab('chat');
   
-  // 输入框自动调整高度
+  // 聊天页面初始化
   const chatInput = document.getElementById('chat-query');
   if (chatInput) {
     chatInput.addEventListener('input', () => {
@@ -1677,15 +2192,48 @@ async function bootstrap() {
   }
   
   try {
-    const userId = chatUserInput.value.trim();
-    if (userId && !chatSessionInput.value.trim()) {
-      await ensureSessionId(userId);
+    // 初始化各页面数据
+    const initTasks = [];
+    
+    // 聊天页面
+    if (document.getElementById('chat-messages')) {
+      renderKnowledgeSources([]);
+      loadRetrievalSettings();
+      if (chatUserInput && chatUserInput.value.trim() && chatSessionInput && !chatSessionInput.value.trim()) {
+        initTasks.push(ensureSessionId(chatUserInput.value.trim()));
+      }
+      initTasks.push(refreshHistory().catch(() => {}));
     }
-    await Promise.all([refreshDocuments(), refreshStats(), refreshHistory(), refreshChunks()]);
-    await refreshModelProviders().catch(() => {});
-    await refreshModelConfigs().catch(() => {});
-    resetModelForm();
+    
+    // 知识库管理页面
+    if (document.getElementById('docs-table')) {
+      loadRetrievalSettings();
+      initTasks.push(refreshDocuments().catch(() => {}));
+      
+      // 统计信息折叠/展开功能
+      const statsHeader = document.getElementById('stats-header');
+      const statsContent = document.getElementById('stats-content');
+      const statsToggleIcon = document.getElementById('stats-toggle-icon');
+      if (statsHeader && statsContent && statsToggleIcon) {
+        statsHeader.addEventListener('click', () => {
+          const isHidden = statsContent.style.display === 'none';
+          statsContent.style.display = isHidden ? 'block' : 'none';
+          statsToggleIcon.textContent = isHidden ? '▲' : '▼';
+        });
+      }
+    }
+    
+    // 模型管理页面
+    if (document.getElementById('model-configs-table')) {
+      initTasks.push(refreshModelProviders().catch(() => {}));
+      initTasks.push(refreshModelConfigs().catch(() => {}));
+      const resetBtn = document.getElementById('btn-reset-model-form');
+      if (resetBtn) resetModelForm();
+    }
+    
+    await Promise.all(initTasks);
   } catch (error) {
+    console.error('初始化错误:', error);
     showToast(error.message || '初始化失败', false);
   }
 }

@@ -35,6 +35,7 @@
     }
   },
   "knowledge_base": {
+    "auto_download_missing_models": false,
     "storage": {
       "persist_dir": "./kb_store",
       "model_cache_dir": "./models/hf_cache"
@@ -43,7 +44,7 @@
       "model": "Qwen/Qwen3-Embedding-0.6B",
       "dimension": null,
       "device": "auto",
-      "local_files_only": false,
+      "local_files_only": true,
       "use_lm_studio": false
     },
     "rerank": {
@@ -60,8 +61,8 @@
     },
     "lm_studio": {
       "model_type": "qwen",
-      "base_url": "http://10.10.0.59:1234",
-      "api_key": "sk-lm-DeMgb9du:f4MD7wrJO3xRsq9PI8Of",
+      "base_url": "http://127.0.0.1:1234",
+      "api_key": "",
       "chat_model": "qwen/qwen3.5-35b-a3b",
       "timeout": 300
     },

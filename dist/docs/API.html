@@ -340,7 +340,10 @@
           <li><code>query</code> (string, 必填)</li>
           <li><code>k</code> (int, 默认 <code>2</code>)</li>
           <li><code>relevance_threshold</code> (float, 可选)</li>
-          <li><code>llm_model</code> (string, 可选)</li>
+          <li><code>model_config_id</code> (int, 可选，优先使用指定模型配置)</li>
+          <li><code>model_config_name</code> (string, 可选，按名称匹配模型配置)</li>
+          <li><code>use_default_model_config</code> (bool, 默认 <code>true</code>)</li>
+          <li><code>llm_model</code> (string, 兼容字段，当前不作为模型选择依据)</li>
           <li><code>generate_answer</code> (bool, 默认 <code>true</code>)</li>
           <li><code>deep_think</code> (bool, 默认 <code>true</code>)</li>
           <li><code>temperature</code> (float, 默认 <code>0.2</code>)</li>
@@ -350,6 +353,7 @@
           <li><code>stream</code> (bool, 可选，<code>true</code> 启用 SSE 流式返回)</li>
           <li><code>pageIndex</code> (int, 可选)</li>
         </ul>
+        <p class="note">模型调用仅通过数据库模型配置执行：优先 <code>model_config_id</code>，其次 <code>model_config_name</code>，最后默认配置；若未配置可用模型，接口会返回错误。</p>
         <p class="note">当 <code>stream=true</code> 时，响应为 SSE（<code>text/event-stream</code>）。</p>
         <p class="note">若传入 <code>user_id</code> 但未传 <code>session_id</code>，服务端会生成新的 <code>session_id</code> 并在响应里返回。</p>
       </div>
@@ -365,6 +369,9 @@
   "query": "如何重置密码？",
   "k": 2,
   "relevance_threshold": null,
+  "model_config_id": null,
+  "model_config_name": null,
+  "use_default_model_config": true,
   "llm_model": null,
   "generate_answer": true,
   "deep_think": true,
@@ -382,6 +389,8 @@
   "is_complete": true,
   "session_id": "d8f4...",
   "user_id": "user-001",
+  "relevance_threshold": 1.2,
+  "threshold_relaxed": false,
   "thinking_summary": "...",
   "messages": [
     {"role": "system", "content": "..."},
@@ -392,15 +401,18 @@
     {
       "distance": 0.1023,
       "filename": "account_guide.md",
-      "similarity": 0.9072
+      "similarity": 0.9072,
+      "text": "命中分片全文...",
+      "preview_text": "命中分片预览（最多约 240 字）..."
     }
   ]
 }</code></pre>
         <p class="note">启用 <code>stream=true</code> 时，响应为 SSE，事件包含：</p>
         <ul>
           <li><code>meta</code>：包含 <code>results</code>、<code>session_id</code>、<code>user_id</code></li>
+          <li><code>thinking_delta</code>：思考过程增量文本，字段 <code>delta</code></li>
           <li><code>delta</code>：增量文本，字段 <code>delta</code></li>
-          <li><code>done</code>：完成事件，包含 <code>finish_reason</code>、<code>thinking_summary</code></li>
+          <li><code>done</code>：完成事件，包含 <code>answer</code>、<code>finish_reason</code>、<code>thinking</code>、<code>thinking_summary</code></li>
         </ul>
         <p class="note">当启用深度思考且模型提供摘要时，返回 <code>thinking_summary</code>；否则为空或不返回。</p>
         <div>前端调用示例（SSE）：</div>

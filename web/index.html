@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WIKI本地知识库控制台</title>
+  <link rel="icon" type="image/png" href="/assets/logo.png">
   <link href="https://cdn.staticfile.org/lxgw-wenkai-screen-webfont/1.7.0/style.min.css" rel="stylesheet">
   <link rel="stylesheet" href="/ui/app.css">
 </head>
@@ -80,9 +81,9 @@
             <input id="chat-threshold" type="hidden" value="">
             <input id="chat-generate" type="hidden" value="true">
             <select id="chat-model-config" style="display: none;">
-              <option value="">-- 自动/内置模型 --</option>
+              <option value="">-- 使用默认模型配置 --</option>
             </select>
-            <input id="chat-use-default-model" type="hidden" value="false">
+            <input id="chat-use-default-model" type="hidden" value="true">
 
             <div class="card chat-box">
               <div id="chat-messages" class="chat-messages">
@@ -131,284 +132,20 @@
     </section>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js" defer></script>
-  <script src="/ui/app.js" defer></script>
-</body>
-</html>
-        <header class="panel-head">
-          <h2>知识库管理</h2>
-          <p>文档增删、上传、批量上传与统计查看。</p>
-        </header>
-
-        <div class="card row-actions">
-          <button id="btn-refresh-docs" class="btn size-small">刷新文档列表</button>
-          <button id="btn-refresh-stats" class="btn size-small">刷新统计</button>
-          <button id="btn-clear-kb" class="btn danger size-small">清空知识库</button>
-        </div>
-        <div class="card">
-          <h3>📊 检索设置</h3>
-          <p style="color: var(--muted); margin: 8px 0 16px;">配置知识库检索参数,影响所有查询请求</p>
-          <div class="settings-grid">
-            <label class="field size-small">
-              <span>返回条数 (k)</span>
-              <input id="kb-k" type="number" min="1" max="20" value="2">
-              <small style="color: var(--muted); font-size: 0.85rem; display: block; margin-top: 4px;">控制检索返回的文档数量</small>
-            </label>
-            <label class="field size-small">
-              <span>相关性阈值</span>
-              <input id="kb-threshold" type="number" step="0.01" min="0.5" max="3.0" placeholder="留空则不过滤">
-              <small style="color: var(--muted); font-size: 0.85rem; display: block; margin-top: 4px;">建议范围 0.8-1.6,越小越严格</small>
-            </label>
-          </div>
-          <div class="actions" style="margin-top: 16px;">
-            <button id="btn-save-retrieval-settings" class="btn primary size-small">💾 保存检索设置</button>
-          </div>
-        </div>
-        <div class="card" id="stats-box">
-          <h3>统计信息</h3>
-          <pre id="stats-output" class="mono">点击“刷新统计”加载数据</pre>
-        </div>
-
-        <form id="doc-form" class="card form-grid">
-          <h3 class="full">新增文本文档</h3>
-          <label class="field size-small">
-            <span>文件名</span>
-            <input id="doc-filename" type="text" placeholder="example.md" required>
-          </label>
-          <label class="field full">
-            <span>文本内容</span>
-            <textarea id="doc-text" rows="5" placeholder="输入文档内容" required></textarea>
-          </label>
-          <div class="actions full">
-            <button type="submit" class="btn primary size-small">新增文档</button>
-          </div>
-        </form>
-
-        <form id="upload-form" class="card form-grid">
-          <h3 class="full">上传文件</h3>
-          <label class="field full">
-            <span>文件</span>
-            <input id="upload-file" type="file" required>
-          </label>
-          <label class="field size-small">
-            <span>文件名（可选）</span>
-            <input id="upload-filename" type="text" placeholder="留空使用原文件名">
-          </label>
-          <label class="field size-small">
-            <span>编码（可选）</span>
-            <input id="upload-encoding" type="text" placeholder="utf-8">
-          </label>
-          <div class="actions full">
-            <button type="submit" class="btn primary size-small">上传</button>
-          </div>
-        </form>
-
-        <form id="batch-upload-form" class="card form-grid">
-          <h3 class="full">批量上传文件</h3>
-          <label class="field full">
-            <span>文件</span>
-            <input id="batch-files" type="file" multiple required>
-          </label>
-          <label class="field size-small">
-            <span>编码（可选）</span>
-            <input id="batch-encoding" type="text" placeholder="utf-8">
-          </label>
-          <div class="actions full">
-            <button type="submit" class="btn size-small">批量上传</button>
-          </div>
-        </form>
-
-        <form id="delete-form" class="card form-grid">
-          <h3 class="full">删除文档</h3>
-          <label class="field size-small">
-            <span>文件名</span>
-            <input id="delete-filename" type="text" placeholder="example.md" required>
-          </label>
-          <div class="actions full">
-            <button type="submit" class="btn danger size-small">删除</button>
-          </div>
-        </form>
-
-        <div class="card">
-          <h3>文档列表</h3>
-          <table class="table" id="docs-table">
-            <thead>
-              <tr>
-                <th>文件名</th>
-                <th>分块数</th>
-                <th>字符数</th>
-              </tr>
-            </thead>
-            <tbody id="docs-tbody">
-              <tr><td colspan="3">暂无数据</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="card" id="chunks-box">
-          <div class="chunks-head">
-            <h3>分片管理</h3>
-            <div class="chunks-actions">
-              <button id="btn-refresh-chunks" class="btn size-small">刷新分片</button>
-            </div>
-          </div>
-          <div class="chunks-filters">
-            <label class="field size-small">
-              <span>选择文档</span>
-              <select id="chunk-filename">
-                <option value="">-- 全部文档 --</option>
-              </select>
-            </label>
-            <label class="field size-small">
-              <span>关键词搜索</span>
-              <input id="chunk-query" type="text" placeholder="输入关键词">
-            </label>
-            <label class="field size-small">
-              <span>每页数量</span>
-              <input id="chunk-page-size" type="number" min="1" value="8">
-            </label>
-            <div class="actions">
-              <button id="btn-apply-chunk-filter" class="btn size-small">应用筛选</button>
-            </div>
-          </div>
-          <div class="chunks-rebuild">
-            <label class="field full size-small">
-              <span>按文件名重建分片</span>
-              <div class="chunks-rebuild-row">
-                <input class="size-small" id="chunk-rebuild-filename" type="text" placeholder="example.pdf" required>
-                <button id="btn-rebuild-chunks" class="btn danger size-small" type="button">重建分片</button>
-              </div>
-            </label>
-          </div>
-          <table class="table" id="chunks-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>文件名</th>
-                <th>内容摘要</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="chunks-tbody">
-              <tr><td colspan="4">暂无分片</td></tr>
-            </tbody>
-          </table>
-          <div class="chunks-pager">
-            <button id="btn-chunk-prev" class="btn size-small">上一页</button>
-            <span id="chunk-page-info">第 1 页</span>
-            <button id="btn-chunk-next" class="btn size-small">下一页</button>
-          </div>
-        </div>
-      </section>
-
-      <section id="panel-model" class="panel">
-        <header class="panel-head">
-          <h2>模型控制管理</h2>
-          <p>管理模型配置、切换默认配置，并进行连通性测试。</p>
-        </header>
-
-        <div class="card row-actions">
-          <button id="btn-refresh-model-configs" class="btn size-small">刷新配置</button>
-          <button id="btn-bootstrap-model-configs" class="btn size-small">初始化预设配置</button>
-        </div>
-
-        <form id="model-config-form" class="card form-grid">
-          <h3 class="full">新增/编辑模型配置</h3>
-          <input id="model-config-id" type="hidden">
-
-          <label class="field size-small">
-            <span>名称</span>
-            <input id="model-name" type="text" placeholder="my-model" required>
-          </label>
-          <label class="field size-small">
-            <span>Provider</span>
-            <select id="model-provider" required></select>
-          </label>
-          <label class="field full">
-            <span>Base URL</span>
-            <input id="model-base-url" type="text" placeholder="https://api.openai.com/v1" required>
-          </label>
-          <label class="field size-small">
-            <span>Model Name</span>
-            <input id="model-model-name" type="text" placeholder="gpt-4o-mini" required>
-          </label>
-          <label class="field size-small">
-            <span>API Key</span>
-            <input id="model-api-key" type="password" placeholder="可留空">
-          </label>
-          <label class="field size-small">
-            <span>温度 temperature</span>
-            <input id="model-temperature" type="number" step="0.1" value="0.7">
-          </label>
-          <label class="field size-small">
-            <span>max_tokens</span>
-            <input id="model-max-tokens" type="number" min="1" placeholder="可选">
-          </label>
-          <label class="field size-small">
-            <span>timeout(秒)</span>
-            <input id="model-timeout" type="number" step="0.5" value="30">
-          </label>
-          <label class="field full">
-            <span>描述</span>
-            <input id="model-description" type="text" placeholder="可选描述">
-          </label>
-          <label class="field checkbox-field">
-            <input id="model-is-active" type="checkbox" checked>
-            <span>启用</span>
-          </label>
-          <label class="field checkbox-field">
-            <input id="model-is-default" type="checkbox">
-            <span>设为默认</span>
-          </label>
-
-          <div class="actions full">
-            <button type="submit" class="btn primary size-small">保存配置</button>
-            <button id="btn-reset-model-form" type="button" class="btn size-small">清空表单</button>
-          </div>
-        </form>
-
-        <div class="card">
-          <h3>配置列表</h3>
-          <table class="table" id="model-configs-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>名称</th>
-                <th>Provider</th>
-                <th>Model</th>
-                <th>状态</th>
-                <th>默认</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="model-configs-tbody">
-              <tr><td colspan="7">暂无数据</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </section>
-  </main>
-
-  <div id="chunk-dialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
-    <div class="dialog-panel" role="document">
+  <div id="source-dialog" class="dialog-backdrop" aria-hidden="true">
+    <div class="dialog-panel source-dialog-panel" role="dialog" aria-modal="true" aria-labelledby="source-dialog-title">
       <header class="dialog-header">
         <div>
-          <p class="dialog-subtitle">分片编辑</p>
-          <h3 id="chunk-dialog-title">编辑分片</h3>
+          <p id="source-dialog-subtitle" class="dialog-subtitle">来源详情</p>
+          <h3 id="source-dialog-title">知识来源</h3>
         </div>
-        <button id="chunk-dialog-close" class="dialog-close" type="button" aria-label="关闭">×</button>
+        <button id="source-dialog-close" class="dialog-close" type="button" aria-label="关闭">&times;</button>
       </header>
       <div class="dialog-body">
-        <label class="field full size-small">
-          <span>分片内容</span>
-          <textarea id="chunk-dialog-text" rows="10" placeholder="请输入分片内容"></textarea>
-        </label>
+        <pre id="source-dialog-content" class="mono source-dialog-content"></pre>
       </div>
       <footer class="dialog-footer">
-        <button id="chunk-dialog-cancel" class="btn size-small" type="button">取消</button>
-        <button id="chunk-dialog-save" class="btn primary size-small" type="button">保存</button>
+        <button id="source-dialog-cancel" class="btn" type="button">关闭</button>
       </footer>
     </div>
   </div>

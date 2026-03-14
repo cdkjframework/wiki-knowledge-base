@@ -425,6 +425,7 @@ body {
   margin-bottom: 12px;
   transition: all 0.2s ease;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  cursor: pointer;
 }
 
 .source-item:hover {
@@ -436,6 +437,11 @@ body {
 
 .source-item:last-child {
   margin-bottom: 0;
+}
+
+.source-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .source-header {
@@ -842,6 +848,51 @@ input.size-small {
   border-color: transparent;
 }
 
+#chunks-table th:last-child,
+#chunks-table td:last-child {
+  width: 190px;
+  white-space: nowrap;
+  text-align: left;
+  vertical-align: middle;
+}
+
+#chunks-table td:last-child .chunks-action-btn {
+  min-width: 72px;
+}
+
+#chunks-table td:last-child {
+  padding-left: 8px;
+}
+
+.table-actions-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#chunks-table {
+  table-layout: fixed;
+}
+
+#chunks-table th:nth-child(1),
+#chunks-table td:nth-child(1) {
+  width: 64px;
+}
+
+#chunks-table th:nth-child(2),
+#chunks-table td:nth-child(2) {
+  width: 330px;
+  overflow-wrap: anywhere;
+}
+
+#chunks-table th:nth-child(3),
+#chunks-table td:nth-child(3) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -860,7 +911,7 @@ input.size-small {
 }
 
 .dialog-panel {
-  width: min(640px, 92vw);
+  width: min(1000px, 92vw);
   background: #fff;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -905,6 +956,8 @@ input.size-small {
 .dialog-body {
   display: grid;
   gap: 10px;
+  height: 70vh;
+  overflow: auto;
 }
 
 .dialog-footer {
@@ -1208,6 +1261,19 @@ input.size-small {
   overflow-y: auto;
 }
 
+.source-dialog-panel {
+  width: min(1520px, 96vw);
+}
+
+.source-dialog-content {
+  height: 100%;
+  min-height: 100%;
+  max-height: 100%;
+  line-height: 1.62;
+  font-size: 0.92rem;
+  overflow: auto;
+}
+
 .chat-input:focus {
   outline: none;
   border-color: var(--accent);
@@ -1386,6 +1452,21 @@ input.size-small {
   word-wrap: break-word;
 }
 
+.message-bubble-thoughts {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.message-bubble-thoughts:empty {
+  display: none;
+  margin-bottom: 0;
+}
+
+.message-bubble-answer:empty {
+  display: none;
+}
+
 .chat-message.user .message-bubble {
   background: linear-gradient(135deg, #0f766e, #14b8a6);
   color: #fff;
@@ -1417,6 +1498,45 @@ input.size-small {
   color: #334155;
 }
 
+.message-thinking-panel {
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  background: rgba(15, 118, 110, 0.04);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.thinking-panel-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #0f766e;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.thinking-panel-summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-panel-summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.2s ease;
+}
+
+.message-thinking-panel[open] .thinking-panel-summary::before {
+  transform: rotate(90deg);
+}
+
+.thinking-panel-body {
+  padding: 0 12px 12px;
+  color: #334155;
+  font-size: 0.86rem;
+}
+
 .chat-message.user .message-time {
   text-align: right;
 }
@@ -1427,6 +1547,10 @@ input.size-small {
   align-items: center;
   gap: 8px;
   padding: 6px 8px 0;
+}
+
+.chat-message.user .message-actions {
+  justify-content: flex-end;
 }
 
 .action-btn {
@@ -1534,9 +1658,10 @@ input.size-small {
 }
 
 .message-bubble.loading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  min-height: 52px;
+}
+
+.message-bubble.loading .message-bubble-answer {
   color: var(--muted);
 }
 
@@ -1547,13 +1672,15 @@ input.size-small {
 }
 
 @keyframes dots {
-  0%, 20% {
+  0%,
+  20% {
     content: '.';
   }
   40% {
     content: '..';
   }
-  60%, 100% {
+  60%,
+  100% {
     content: '...';
   }
 }
@@ -1948,13 +2075,15 @@ input.size-small {
 }
 
 .chunk-manager-modal-content {
-  width: 80%;
-  max-width: 1100px;
+  width: 80vw;
+  max-width: 80vw;
+  height: 80vh;
+  max-height: 80vh;
 }
 
 .chunk-manager-body {
   padding: 20px 24px 24px;
-  max-height: calc(90vh - 88px);
+  max-height: calc(80vh - 88px);
   overflow-y: auto;
 }
 

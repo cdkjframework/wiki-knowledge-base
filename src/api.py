@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -125,14 +126,17 @@ class KnowledgeBaseApi:
         think_end = "</think>"
         start = answer_text.find(think_start)
         if start < 0:
-            return answer_text.strip(), None, thinking_summary
+            cleaned_answer = KnowledgeBaseApi._clean_answer_text(answer_text.strip())
+            return cleaned_answer, None, thinking_summary
         end = answer_text.find(think_end, start + len(think_start))
         if end < 0:
             thinking = answer_text[start + len(think_start):].strip()
-            cleaned = answer_text[:start].strip()
+            cleaned = KnowledgeBaseApi._clean_answer_text(answer_text[:start].strip())
             return cleaned, (thinking or None), thinking_summary
         thinking = answer_text[start + len(think_start): end].strip()
-        cleaned = (answer_text[:start] + answer_text[end + len(think_end):]).strip()
+        cleaned = KnowledgeBaseApi._clean_answer_text(
+            (answer_text[:start] + answer_text[end + len(think_end):]).strip()
+        )
         return cleaned, (thinking or None), thinking_summary
 
     @staticmethod
@@ -283,7 +287,38 @@ class KnowledgeBaseApi:
                     thinking = prefix
                     answer = suffix
 
-        return answer.strip(), thinking.strip(), summary
+        answer = KnowledgeBaseApi._clean_answer_text(answer.strip())
+        thinking = KnowledgeBaseApi._clean_thinking_text(thinking)
+        return answer, thinking.strip(), summary
+
+    @staticmethod
+    def _clean_answer_text(text: str) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return ""
+        # Strip occasional garbage prefix left by partial stream/tag boundaries.
+        cleaned = re.sub(r"^(?:[\.。…`'\"\)\]\}>;:,\-\s]{2,})(?=[A-Za-z\u4e00-\u9fff\d#*\-])", "", cleaned)
+        cleaned = re.sub(r"^(?:final\s*answer|最终答案|【最终答案】)\s*[:：\-]*\s*", "", cleaned, flags=re.I)
+        return cleaned.strip()
+
+    @staticmethod
+    def _clean_thinking_text(text: str) -> str:
+        cleaned = str(text or "")
+        if not cleaned:
+            return ""
+        for tag in ("<think>", "</think>", "<thinking_summary>", "</thinking_summary>"):
+            cleaned = cleaned.replace(tag, "")
+        cleaned = cleaned.replace("```", "")
+        cleaned = re.sub(
+            r"(?im)^\s*(?:tags?,?\s*final\s*answer\s*after\s*thinking|summary\s+in|"
+            r"wait,?\s+looking\s+at\s+the\s+instruction|let'?s\s+check\s+the\s+instruction|"
+            r"actually,\s+looking\s+at\s+similar\s+tasks|wait,?\s+is\s+there\s+a\s+risk\s+of\s+confusion|"
+            r"also,\s+the\s+summary\s+tag\s+is|this\s+should\s+be\s+inside\s+the\s+thinking\s+block).*$",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
 
     @staticmethod
     def _split_text_by_lengths(text: str, lengths: Sequence[int]) -> List[str]:
@@ -550,10 +585,10 @@ class KnowledgeBaseApi:
             # 通过在系统提示词中明确要求输出思考过程
             qwen_think_prompt = (
                 "\n\n请在回答前进行深度思考：\n"
-                "1. 将你的思考过程用 <think>...</think> 标签包裹\n"
-                "2. 在思考后给出最终答案\n"
-                "3. 思考过程应包含：问题分析、知识检索、逻辑推理、结论验证\n"
-                "4. 在思考末尾用 <thinking_summary>...</thinking_summary> 标签给出简要的思考摘要"
+                "1. 仅将真实思考内容放入 <think>...</think>，不要复述提示词，不要解释标签规则，不要讨论输出格式。\n"
+                "2. 思考结束后直接给出最终答案。\n"
+                "3. 思考过程应包含：问题分析、知识检索、逻辑推理、结论验证。\n"
+                "4. 在思考末尾用 <thinking_summary>...</thinking_summary> 给出一句简短摘要。"
             )
             system_prompt += qwen_think_prompt
             logger.info("应用 Qwen 深度思考策略：添加 <think> 标签引导")
@@ -610,17 +645,11 @@ class KnowledgeBaseApi:
         model_config_name: str | None = None,
         use_default_model_config: bool = False,
     ) -> tuple[Any | None, str]:
-        """Resolve runtime chat client/model from db model config or fallback to built-in backend."""
+        """Resolve runtime chat client/model strictly from database model configs."""
         if not self._model_config_manager:
-            return None, self._resolve_llm_model(llm_model)
-
-        wants_db_model = (
-            model_config_id is not None
-            or bool(model_config_name)
-            or bool(use_default_model_config)
-        )
-        if not wants_db_model:
-            return None, self._resolve_llm_model(llm_model)
+            raise RuntimeError(
+                "模型调用仅支持数据库模型配置。当前未启用模型配置管理，请先配置数据库并创建模型配置。"
+            )
 
         if model_config_id is not None:
             cfg = self._model_config_manager.store.get_config(int(model_config_id))
@@ -638,7 +667,9 @@ class KnowledgeBaseApi:
 
         cfg = self._model_config_manager.store.get_default_config()
         if not cfg:
-            raise ValueError("No default model configuration found")
+            raise RuntimeError(
+                "未配置默认模型。请在模型管理中创建并设置默认模型，或在请求中传 model_config_id/model_config_name。"
+            )
         client = self._model_config_manager.get_client(use_default=True)
         return client, str(llm_model or cfg.get("model_name") or "").strip()
 
@@ -667,17 +698,19 @@ class KnowledgeBaseApi:
         context = self._build_context(results)
         if not context:
             return (
-                "You are a knowledge-base assistant.",
-                "未检索到相关知识库内容。",
+                "你是知识库问答助手，所有输出必须使用简体中文。若知识库没有足够依据，请明确回答：根据当前知识库无法确定。",
+                f"用户问题：{question}\n\n当前未检索到相关知识库内容。请使用简体中文明确说明根据当前知识库无法确定答案。",
             )
         system_prompt = (
-            "You are a knowledge-base assistant. Answer only from the provided context. "
-            "If evidence is insufficient, say that the answer is unknown from current knowledge."
+            "你是知识库问答助手。所有输出都必须使用简体中文。"
+            "只能依据提供的知识库上下文回答问题。"
+            "如果证据不足，请明确回答：根据当前知识库无法确定。"
+            "不要编造，不要脱离上下文扩展。"
         )
         user_prompt = (
-            f"Question: {question}\n\n"
-            f"Knowledge context:\n{context}\n\n"
-            "Provide a concise and accurate answer."
+            f"用户问题：{question}\n\n"
+            f"知识库上下文：\n{context}\n\n"
+            "请基于以上内容，用简体中文给出准确、简洁、可核对的回答。"
         )
         return system_prompt, user_prompt
 
@@ -693,7 +726,7 @@ class KnowledgeBaseApi:
         max_tokens: int | None = None,
         history_messages: Sequence[Dict[str, Any]] | None = None,
         deep_think: bool = True,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, str | None]:
         # 输入参数日志
         logger.info("=== _answer_from_lm_studio 方法调用 ===")
         logger.info("输入参数:")
@@ -724,7 +757,7 @@ class KnowledgeBaseApi:
         
         if user_prompt == "未检索到相关知识库内容。":
             logger.warning("检索到的知识库内容为空")
-            return user_prompt, None
+            return user_prompt, None, None
         messages = [
             {"role": "system", "content": system_prompt},
         ]
@@ -755,9 +788,9 @@ class KnowledgeBaseApi:
             )
         
         # 输出参数日志
-        result = str(answer or "").strip()
-        result, _, tag_summary = self._split_thinking_sections(result)
-        _, thinking_summary = self._extract_thinking_summary(str(answer or ""))
+        raw_result = str(answer or "").strip()
+        result, thinking_text, tag_summary = self._split_thinking_sections(raw_result)
+        _, thinking_summary = self._extract_thinking_summary(raw_result)
         if tag_summary and not thinking_summary:
             thinking_summary = tag_summary
         logger.info("=== _answer_from_lm_studio 方法返回 ===")
@@ -765,10 +798,12 @@ class KnowledgeBaseApi:
         logger.info("  answer: %s", result[:200] if len(result) > 200 else result)
         logger.info("  answer_length: %d", len(result))
         logger.info("  answer_preview: %s", self._log_preview(result))
+        if thinking_text:
+            logger.info("  thinking_length: %d", len(thinking_text))
         if thinking_summary:
             logger.info("  thinking_summary_length: %d", len(thinking_summary))
         logger.info("=== 方法执行完成 ===")
-        return result, thinking_summary
+        return result, (thinking_text or None), thinking_summary
 
     def _answer_stream_from_lm_studio(
         self,
@@ -942,12 +977,15 @@ class KnowledgeBaseApi:
                 logger.debug("处理检索结果 #%d: filename=%s, distance=%.4f", idx, fn, distance_raw)
                 distance = max(0.0, float(distance_raw))
                 similarity = self._distance_to_similarity(distance)
-                ranked_results.append({"filename": fn, "text": text, "score": similarity})
+                chunk_text = str(text or "")
+                ranked_results.append({"filename": fn, "text": chunk_text, "score": similarity})
                 result_items.append(
                     {
                         "distance": round(float(distance), 4),
                         "filename": str(fn),
                         "similarity": round(float(similarity), 4),
+                        "text": chunk_text,
+                        "preview_text": chunk_text[:240],
                     }
                 )
             answer = ""
@@ -963,7 +1001,7 @@ class KnowledgeBaseApi:
             
             if generate_answer:
                 logger.debug("开始生成答案，使用 %d 个检索结果", len(ranked_results))
-                answer, thinking_summary = self._answer_from_lm_studio(
+                answer, thinking, thinking_summary = self._answer_from_lm_studio(
                     question=query,
                     results=ranked_results,
                     llm_model=llm_model,
@@ -976,11 +1014,14 @@ class KnowledgeBaseApi:
                     deep_think=deep_think,
                 )
                 logger.debug("答案生成完成，长度: %d", len(answer))
+                if thinking:
+                    logger.debug("思考内容长度: %d", len(thinking))
                 if thinking_summary:
                     logger.debug("思考摘要长度: %d", len(thinking_summary))
             else:
                 logger.debug("跳过答案生成（generate_answer=False）")
                 finish_reason = "not_requested"
+                thinking = None
                 thinking_summary = None
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -995,6 +1036,7 @@ class KnowledgeBaseApi:
                 "results": result_items,
                 "session_id": session_id,
                 "user_id": user_id,
+                "thinking": thinking,
                 "thinking_summary": thinking_summary,
                 "relevance_threshold": effective_threshold,
                 "threshold_relaxed": bool(threshold_relaxed),
@@ -1054,12 +1096,15 @@ class KnowledgeBaseApi:
         for fn, text, distance_raw in raw:
             distance = max(0.0, float(distance_raw))
             similarity = self._distance_to_similarity(distance)
-            ranked_results.append({"filename": fn, "text": text, "score": similarity})
+            chunk_text = str(text or "")
+            ranked_results.append({"filename": fn, "text": chunk_text, "score": similarity})
             result_items.append(
                 {
                     "distance": round(float(distance), 4),
                     "filename": str(fn),
                     "similarity": round(float(similarity), 4),
+                    "text": chunk_text,
+                    "preview_text": chunk_text[:240],
                 }
             )
 
@@ -1791,6 +1836,7 @@ class HttpApiServer:
                             self._send_sse(
                                 "done",
                                 {
+                                    "answer": answer_text,
                                     "finish_reason": finish_reason,
                                     "thinking": thinking_text,
                                     "thinking_summary": thinking_summary,
@@ -2156,6 +2202,7 @@ class HttpApiServer:
                             self._send_sse(
                                 "done",
                                 {
+                                    "answer": answer_text,
                                     "finish_reason": finish_reason,
                                     "thinking": thinking_text,
                                     "thinking_summary": thinking_summary,

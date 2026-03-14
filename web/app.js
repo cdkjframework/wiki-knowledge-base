@@ -7,6 +7,7 @@ const chunkState = {
 };
 let documentsList = [];
 let modelConfigsList = [];
+let historyRefreshTimer = null;
 const chatUserInput = document.getElementById('chat-user-id');
 const chatSessionInput = document.getElementById('chat-session-id');
 const newSessionBtn = document.getElementById('btn-new-session');
@@ -17,6 +18,12 @@ const chunkDialogText = document.getElementById('chunk-dialog-text');
 const chunkDialogClose = document.getElementById('chunk-dialog-close');
 const chunkDialogCancel = document.getElementById('chunk-dialog-cancel');
 const chunkDialogSave = document.getElementById('chunk-dialog-save');
+const sourceDialog = document.getElementById('source-dialog');
+const sourceDialogTitle = document.getElementById('source-dialog-title');
+const sourceDialogSubtitle = document.getElementById('source-dialog-subtitle');
+const sourceDialogContent = document.getElementById('source-dialog-content');
+const sourceDialogCloseBtn = document.getElementById('source-dialog-close');
+const sourceDialogCancelBtn = document.getElementById('source-dialog-cancel');
 const chunkEditState = {
   id: null,
   filename: '',
@@ -24,6 +31,30 @@ const chunkEditState = {
 const chunkManagerState = {
   selectedFilename: '',
 };
+
+function openSourceDialog(item, index = 0) {
+  if (!sourceDialog || !sourceDialogTitle || !sourceDialogContent) return;
+
+  const filename = String(item?.filename || 'unknown');
+  const sim = item?.similarity != null ? Number(item.similarity) : null;
+  const scoreLabel = sim == null || Number.isNaN(sim) ? '' : ` | 相似度 ${(sim * 100).toFixed(1)}%`;
+  const fullText = String(item?.text || item?.chunk || item?.content || item?.preview_text || '').trim() || '（无内容）';
+
+  sourceDialogTitle.textContent = `知识来源 #${Number(index) + 1}`;
+  if (sourceDialogSubtitle) {
+    sourceDialogSubtitle.textContent = `${filename}${scoreLabel}`;
+  }
+  sourceDialogContent.textContent = fullText;
+  sourceDialog.classList.add('open');
+  sourceDialog.setAttribute('aria-hidden', 'false');
+}
+
+function closeSourceDialog() {
+  if (!sourceDialog || !sourceDialogContent) return;
+  sourceDialog.classList.remove('open');
+  sourceDialog.setAttribute('aria-hidden', 'true');
+  sourceDialogContent.textContent = '';
+}
 
 function renderKnowledgeSources(results = [], statusText = '') {
   const list = document.getElementById('sources-list');
@@ -53,6 +84,9 @@ function renderKnowledgeSources(results = [], statusText = '') {
   items.forEach((item, idx) => {
     const card = document.createElement('div');
     card.className = 'source-item';
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-label', `查看来源 ${idx + 1} 详情`);
 
     const header = document.createElement('div');
     header.className = 'source-header';
@@ -68,12 +102,21 @@ function renderKnowledgeSources(results = [], statusText = '') {
 
     const text = document.createElement('div');
     text.className = 'source-text';
-    text.textContent = String(item.text || item.chunk || item.content || '').slice(0, 180) || '（无内容预览）';
+    text.textContent = String(
+      item.preview_text || item.text || item.chunk || item.content || ''
+    ).slice(0, 180) || '（无内容预览）';
 
     header.appendChild(name);
     header.appendChild(score);
     card.appendChild(header);
     card.appendChild(text);
+    card.addEventListener('click', () => openSourceDialog(item, idx));
+    card.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openSourceDialog(item, idx);
+      }
+    });
     list.appendChild(card);
   });
 }
@@ -93,6 +136,76 @@ function showToast(message, ok = true) {
   showToast._timer = window.setTimeout(() => {
     toast.className = 'toast';
   }, 3200);
+}
+
+async function copyTextToClipboard(text) {
+  const plain = String(text || '');
+  if (!plain.trim()) return false;
+
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(plain);
+      return true;
+    }
+  } catch (error) {
+    // Fall back to legacy copy approach below.
+  }
+
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = plain;
+    textarea.setAttribute('readonly', 'readonly');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return Boolean(ok);
+  } catch (error) {
+    return false;
+  }
+}
+
+function extractAssistantAnswerText(aiBubble) {
+  if (!aiBubble) return '';
+  const answerHost = aiBubble.querySelector('.message-bubble-answer');
+  if (answerHost) {
+    return answerHost.innerText || answerHost.textContent || '';
+  }
+  return aiBubble.innerText || aiBubble.textContent || '';
+}
+
+function createMessageCopyButton(targetOrGetter, title = '复制内容') {
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'action-btn copy-btn';
+  const copyIcon = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  const okIcon = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+  copyBtn.innerHTML = copyIcon;
+  copyBtn.title = title;
+  copyBtn.addEventListener('click', async () => {
+    const text = typeof targetOrGetter === 'function'
+      ? String(targetOrGetter() || '')
+      : (targetOrGetter?.innerText || targetOrGetter?.textContent || '');
+    if (!text.trim()) return;
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      copyBtn.innerHTML = okIcon;
+      setTimeout(() => {
+        copyBtn.innerHTML = copyIcon;
+      }, 1500);
+    }
+  });
+  return copyBtn;
+}
+
+function appendUserCopyAction(content, userBubble) {
+  if (!content || !userBubble) return;
+  const actionsBar = document.createElement('div');
+  actionsBar.className = 'message-actions';
+  actionsBar.appendChild(createMessageCopyButton(userBubble, '复制问题'));
+  content.appendChild(actionsBar);
 }
 
 async function apiRequest(path, options = {}) {
@@ -138,21 +251,10 @@ function addReferencesToMessage(results) {
   const actionsBar = document.createElement('div');
   actionsBar.className = 'message-actions';
   
-  // 复制按钮
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 'action-btn copy-btn';
-  copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-  copyBtn.title = '复制回答';
-  copyBtn.addEventListener('click', () => {
+  const copyBtn = createMessageCopyButton(() => {
     const bubble = lastMessage.querySelector('.message-bubble');
-    const text = bubble.innerText || bubble.textContent;
-    navigator.clipboard.writeText(text).then(() => {
-      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-      setTimeout(() => {
-        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-      }, 1500);
-    }).catch(() => {});
-  });
+    return extractAssistantAnswerText(bubble);
+  }, '复制回答');
   
   // 引用文档
   const refBtn = document.createElement('button');
@@ -221,6 +323,7 @@ function addUserMessage(text) {
   
   content.appendChild(bubble);
   content.appendChild(time);
+  appendUserCopyAction(content, bubble);
   messageDiv.appendChild(avatar);
   messageDiv.appendChild(content);
   messagesContainer.appendChild(messageDiv);
@@ -248,18 +351,17 @@ function addAssistantMessage(text, isLoading = false) {
   
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
+  content.appendChild(bubble);
   if (isLoading) {
-    bubble.classList.add('loading');
-    bubble.innerHTML = '<span class="loading-dots">正在思考</span>';
+    setAssistantBubbleAnswer(content, '');
   } else {
-    bubble.innerHTML = renderMessageContent(text);
+    setAssistantBubbleAnswer(content, text);
   }
   
   const time = document.createElement('div');
   time.className = 'message-time';
   time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   
-  content.appendChild(bubble);
   content.appendChild(time);
   messageDiv.appendChild(avatar);
   messageDiv.appendChild(content);
@@ -275,9 +377,8 @@ function updateLastAssistantMessage(text) {
   if (messages.length === 0) return;
   
   const lastMessage = messages[messages.length - 1];
-  const bubble = lastMessage.querySelector('.message-bubble');
-  bubble.classList.remove('loading');
-  bubble.innerHTML = renderMessageContent(text);
+  const content = lastMessage.querySelector('.message-content');
+  setAssistantBubbleAnswer(content, text);
   
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
@@ -291,9 +392,166 @@ function renderMessageContent(text) {
   return renderMarkdownFallback(raw);
 }
 
+function sanitizeThinkingDisplayText(text) {
+  let cleaned = String(text || '');
+  if (!cleaned) return '';
+  cleaned = cleaned
+    .replace(/<\/?think>/gi, '')
+    .replace(/<\/?thinking_summary>/gi, '')
+    .replace(/```/g, '');
+  cleaned = cleaned.replace(
+    /^\s*(?:tags?,?\s*final\s*answer\s*after\s*thinking|summary\s+in|wait,?\s+looking\s+at\s+the\s+instruction|let'?s\s+check\s+the\s+instruction|actually,\s+looking\s+at\s+similar\s+tasks|wait,?\s+is\s+there\s+a\s+risk\s+of\s+confusion|also,\s+the\s+summary\s+tag\s+is|this\s+should\s+be\s+inside\s+the\s+thinking\s+block).*$/gim,
+    ''
+  );
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  return cleaned.trim();
+}
+
+function findAssistantBubble(container) {
+  return container ? container.querySelector('.message-bubble') : null;
+}
+
+function ensureAssistantBubbleSections(container) {
+  const bubble = findAssistantBubble(container);
+  if (!bubble) {
+    return { bubble: null, thoughtsHost: null, answerHost: null };
+  }
+
+  let thoughtsHost = bubble.querySelector('.message-bubble-thoughts');
+  let answerHost = bubble.querySelector('.message-bubble-answer');
+  if (!thoughtsHost || !answerHost) {
+    const existingNodes = Array.from(bubble.childNodes);
+    bubble.innerHTML = '';
+
+    thoughtsHost = document.createElement('div');
+    thoughtsHost.className = 'message-bubble-thoughts';
+
+    answerHost = document.createElement('div');
+    answerHost.className = 'message-bubble-answer';
+
+    bubble.appendChild(thoughtsHost);
+    bubble.appendChild(answerHost);
+
+    if (existingNodes.length > 0) {
+      answerHost.replaceChildren(...existingNodes);
+    }
+  }
+
+  return { bubble, thoughtsHost, answerHost };
+}
+
+function setAssistantBubbleAnswer(container, text) {
+  const { bubble, thoughtsHost, answerHost } = ensureAssistantBubbleSections(container);
+  if (!bubble || !answerHost) return;
+
+  const content = String(text || '');
+  const isLoading = !content.trim();
+  const hasThinkingPanel = Boolean(thoughtsHost && thoughtsHost.textContent && thoughtsHost.textContent.trim());
+  if (isLoading) {
+    answerHost.innerHTML = hasThinkingPanel
+      ? ''
+      : '<span class="loading-dots" aria-live="polite">正在思考</span>';
+  } else {
+    answerHost.innerHTML = renderMessageContent(content);
+  }
+  bubble.classList.toggle('loading', isLoading);
+}
+
+function splitMixedAnswerAndThinking(answerText, thinkingText) {
+  let answer = String(answerText || '').trim();
+  let thinking = String(thinkingText || '').trim();
+
+  if (!answer) {
+    return { answer: '', thinking };
+  }
+
+  const thinkBlock = answer.match(/<think>([\s\S]*?)<\/think>/i);
+  if (thinkBlock) {
+    const block = String(thinkBlock[1] || '').trim();
+    if (block) {
+      thinking = thinking ? `${thinking}\n\n${block}` : block;
+    }
+    answer = answer.replace(/<think>[\s\S]*?<\/think>/ig, '').trim();
+  }
+
+  const headingMatch = answer.match(/(?:^|\n)\s*(thinking process|思考过程|reasoning|analysis)\s*[:：]/i);
+  if (headingMatch) {
+    const finalMatch = answer.match(/(?:^|\n)\s*(final answer|最终答案|答案)\s*[:：]/i);
+    if (finalMatch && finalMatch.index != null && headingMatch.index != null && finalMatch.index > headingMatch.index) {
+      const thinkingPart = answer.slice(headingMatch.index, finalMatch.index).trim();
+      const answerPart = answer.slice(finalMatch.index).trim();
+      if (thinkingPart) {
+        thinking = thinking ? `${thinking}\n\n${thinkingPart}` : thinkingPart;
+      }
+      answer = answerPart;
+    } else if (!thinking) {
+      thinking = answer;
+      answer = '';
+    }
+  }
+
+  const planningCueRegex = /(?:provide a summary at the end of thinking|thinking summary at the end of thought process|thinking process|goal\s*:|scan knowledge base|synthesize the information|synthesize\s*the\s*answer|draft the response|refine based on constraints|analyze the request|analyze the knowledge base context|question\s*:|intent\s*:|task\s*:|output\s*format\s*:|document\s*\[[0-9]+\]\s*:)/i;
+  const compact = answer.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, '');
+  const compactPlanningTokens = [
+    'analyzetheuserquestion',
+    'analyzetheknowledgebasecontext',
+    'synthesizetheanswer',
+    'drafttheresponse',
+    'refinebasedonconstraints',
+    'thinkingsummaryattheendofthoughtprocess',
+    'contentrelatedtoprojects',
+    'projectrelatedsections',
+  ];
+  const hasCompactPlanningToken = compactPlanningTokens.some((token) => compact.includes(token));
+  const finalStartRegexList = [
+    /根据提供的知识库上下文/,
+    /根据(?:提供|以上|上述).{0,30}(?:上下文|内容|文档)/,
+    /与.{0,30}相关的内容主要包含以下/,
+    /主要包含以下几个方面/,
+    /结合(?:提供|上述).{0,20}(?:文档|内容)/,
+    /可归纳为以下(?:几点|方面)/,
+  ];
+  let finalStartIndex = -1;
+  for (const regex of finalStartRegexList) {
+    const m = answer.match(regex);
+    if (m && m.index != null && (finalStartIndex < 0 || m.index < finalStartIndex)) {
+      finalStartIndex = m.index;
+    }
+  }
+  if (finalStartIndex > 0) {
+    const prefix = answer.slice(0, finalStartIndex).trim();
+    if (prefix && (planningCueRegex.test(prefix) || hasCompactPlanningToken)) {
+      thinking = thinking ? `${thinking}\n\n${prefix}` : prefix;
+      answer = answer.slice(finalStartIndex).trim();
+    }
+  }
+
+  const leadingLeakRegex = /^\s*(?:\)\.\s*)?(?:provide a summary at the end of thinking|thinking summary at the end of thought process|thinking process\s*:|\*\s*goal\s*:|scan knowledge base(?:\s*for)?|synthesize the information|synthesizetheanswer\s*:|analyzetheuserquestion\s*:|analyzetheknowledgebasecontext\s*:|draft the response|refine based on constraints|analyze the request|question\s*:|intent\s*:|task\s*:|output\s*format\s*:|document\s*\[[0-9]+\]\s*:)\s*[^\n]*(?:\n|$)/i;
+  while (leadingLeakRegex.test(answer)) {
+    const matched = answer.match(leadingLeakRegex);
+    if (!matched) break;
+    const chunk = String(matched[0] || '').trim();
+    if (chunk) {
+      thinking = thinking ? `${thinking}\n${chunk}` : chunk;
+    }
+    answer = answer.slice(matched[0].length).trim();
+  }
+
+  if ((planningCueRegex.test(answer) || hasCompactPlanningToken) && !/根据|主要包含|可归纳|项目介绍|项目风险|假设与限制/.test(answer)) {
+    thinking = thinking ? `${thinking}\n\n${answer}` : answer;
+    answer = '';
+  }
+
+  answer = answer.replace(/^(?:final\s*answer|最终答案|答案)\s*[:：\-]*\s*/i, '').trim();
+  return { answer, thinking };
+}
+
 function appendThinkingSummary(container, summary) {
   if (!container || !summary) return;
-  const existing = container.querySelector('.message-thinking');
+  const { thoughtsHost } = ensureAssistantBubbleSections(container);
+  if (!thoughtsHost) return;
+
+  const existing = thoughtsHost.querySelector('.message-thinking');
   if (existing) {
     existing.remove();
   }
@@ -307,7 +565,41 @@ function appendThinkingSummary(container, summary) {
   body.innerHTML = renderMessageContent(summary);
   wrap.appendChild(title);
   wrap.appendChild(body);
-  container.appendChild(wrap);
+  thoughtsHost.prepend(wrap);
+}
+
+function upsertThinkingContent(container, thinking, collapsed = false) {
+  if (!container) return;
+  const text = sanitizeThinkingDisplayText(thinking);
+  const { thoughtsHost } = ensureAssistantBubbleSections(container);
+  if (!thoughtsHost) return;
+
+  const existing = thoughtsHost.querySelector('.message-thinking-panel');
+  if (!text) {
+    if (existing) existing.remove();
+    return;
+  }
+
+  let panel = existing;
+  let summaryEl;
+  let bodyEl;
+  if (!panel) {
+    panel = document.createElement('details');
+    panel.className = 'message-thinking-panel';
+    summaryEl = document.createElement('summary');
+    summaryEl.className = 'thinking-panel-summary';
+    summaryEl.textContent = '思考过程';
+    bodyEl = document.createElement('div');
+    bodyEl.className = 'thinking-panel-body';
+    panel.appendChild(summaryEl);
+    panel.appendChild(bodyEl);
+    thoughtsHost.appendChild(panel);
+  } else {
+    summaryEl = panel.querySelector('.thinking-panel-summary');
+    bodyEl = panel.querySelector('.thinking-panel-body');
+  }
+  bodyEl.innerHTML = renderMessageContent(text);
+  panel.open = !collapsed;
 }
 
 function addThinkingSummaryToLastAssistant(summary) {
@@ -318,6 +610,24 @@ function addThinkingSummaryToLastAssistant(summary) {
   const lastMessage = messages[messages.length - 1];
   const content = lastMessage.querySelector('.message-content');
   appendThinkingSummary(content, summary);
+}
+
+function updateLastAssistantThinking(thinking, collapsed = false) {
+  const messagesContainer = document.getElementById('chat-messages');
+  const messages = messagesContainer.querySelectorAll('.chat-message.assistant');
+  if (messages.length === 0) return;
+  const lastMessage = messages[messages.length - 1];
+  const content = lastMessage.querySelector('.message-content');
+  upsertThinkingContent(content, thinking, collapsed);
+}
+
+function renderAssistantThoughtBlocks(container, thinkingSummary, thinking, collapsed = true) {
+  if (thinkingSummary) {
+    appendThinkingSummary(container, thinkingSummary);
+  }
+  if (thinking) {
+    upsertThinkingContent(container, thinking, collapsed);
+  }
 }
 
 function loadSessionToChat(session) {
@@ -346,6 +656,7 @@ function loadSessionToChat(session) {
     const query = request.query || '新建聊天';
     const answer = response.answer || historyItem?.error || '无回答';
     const results = response.results || [];
+    const thinking = response.thinking || '';
     // thinking_summary 可能在顶层(数据库字段)或在 response 中(新消息)
     const thinkingSummary = historyItem?.thinking_summary || response.thinking_summary || '';
     
@@ -387,13 +698,14 @@ function loadSessionToChat(session) {
     
     const aiBubble = document.createElement('div');
     aiBubble.className = 'message-bubble';
-    aiBubble.innerHTML = renderMessageContent(answer);
     
     const aiTime = document.createElement('div');
     aiTime.className = 'message-time';
     aiTime.textContent = formatHistoryTime(historyItem?.timestamp);
     
     aiContent.appendChild(aiBubble);
+    setAssistantBubbleAnswer(aiContent, answer);
+    renderAssistantThoughtBlocks(aiContent, thinkingSummary, thinking, true);
     aiContent.appendChild(aiTime);
     
     // 添加操作栏（复制按钮和引用文档）
@@ -401,11 +713,6 @@ function loadSessionToChat(session) {
       const actionsBar = createActionsBar(aiBubble, results);
       aiContent.appendChild(actionsBar);
     }
-
-    if (thinkingSummary) {
-      appendThinkingSummary(aiContent, thinkingSummary);
-    }
-    
     aiMsg.appendChild(aiAvatar);
     aiMsg.appendChild(aiContent);
     messagesContainer.appendChild(aiMsg);
@@ -425,20 +732,7 @@ function createActionsBar(aiBubble, results) {
   const actionsBar = document.createElement('div');
   actionsBar.className = 'message-actions';
   
-  // 复制按钮
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 'action-btn copy-btn';
-  copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-  copyBtn.title = '复制回答';
-  copyBtn.addEventListener('click', () => {
-    const text = aiBubble.innerText || aiBubble.textContent;
-    navigator.clipboard.writeText(text).then(() => {
-      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-      setTimeout(() => {
-        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-      }, 1500);
-    }).catch(() => {});
-  });
+  const copyBtn = createMessageCopyButton(() => extractAssistantAnswerText(aiBubble), '复制回答');
   
   // 引用文档
   const refBtn = document.createElement('button');
@@ -530,6 +824,7 @@ function loadSessionToChat(session) {
     
     userContent.appendChild(userBubble);
     userContent.appendChild(userTime);
+    appendUserCopyAction(userContent, userBubble);
     userMsg.appendChild(userAvatar);
     userMsg.appendChild(userContent);
     messagesContainer.appendChild(userMsg);
@@ -561,12 +856,6 @@ function loadSessionToChat(session) {
       const actionsBar = createActionsBar(aiBubble, results);
       aiContent.appendChild(actionsBar);
     }
-
-    // 添加思考摘要
-    if (thinkingSummary) {
-      appendThinkingSummary(aiContent, thinkingSummary);
-    }
-    
     aiMsg.appendChild(aiAvatar);
     aiMsg.appendChild(aiContent);
     messagesContainer.appendChild(aiMsg);
@@ -591,6 +880,7 @@ function loadHistoryToChat(historyItem) {
   const query = request.query || '新建聊天';
   const answer = response.answer || historyItem?.error || '无回答';
   const results = response.results || [];
+  const thinking = response.thinking || '';
   // thinking_summary 可能在顶层(数据库字段)或在 response 中(新消息)
   const thinkingSummary = historyItem?.thinking_summary || response.thinking_summary || '';
   
@@ -615,6 +905,7 @@ function loadHistoryToChat(historyItem) {
   
   userContent.appendChild(userBubble);
   userContent.appendChild(userTime);
+  appendUserCopyAction(userContent, userBubble);
   userMsg.appendChild(userAvatar);
   userMsg.appendChild(userContent);
   messagesContainer.appendChild(userMsg);
@@ -632,78 +923,20 @@ function loadHistoryToChat(historyItem) {
   
   const aiBubble = document.createElement('div');
   aiBubble.className = 'message-bubble';
-  aiBubble.innerHTML = renderMessageContent(answer);
   
   const aiTime = document.createElement('div');
   aiTime.className = 'message-time';
   aiTime.textContent = formatHistoryTime(historyItem?.timestamp);
   
   aiContent.appendChild(aiBubble);
+  setAssistantBubbleAnswer(aiContent, answer);
+  renderAssistantThoughtBlocks(aiContent, thinkingSummary, thinking, true);
   aiContent.appendChild(aiTime);
   
   // 添加操作栏（复制按钮和引用文档）
   if (results.length > 0) {
-    const actionsBar = document.createElement('div');
-    actionsBar.className = 'message-actions';
-    
-    // 复制按钮
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'action-btn copy-btn';
-    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-    copyBtn.title = '复制回答';
-    copyBtn.addEventListener('click', () => {
-      const text = aiBubble.innerText || aiBubble.textContent;
-      navigator.clipboard.writeText(text).then(() => {
-        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-        setTimeout(() => {
-          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-        }, 1500);
-      }).catch(() => {});
-    });
-    
-    // 引用文档
-    const refBtn = document.createElement('button');
-    refBtn.className = 'action-btn ref-btn';
-    const refCount = results.length;
-    refBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><span class="ref-count">${refCount}</span>`;
-    
-    // 创建引用列表
-    const refList = document.createElement('div');
-    refList.className = 'ref-tooltip';
-    const refTitle = document.createElement('div');
-    refTitle.className = 'ref-tooltip-title';
-    refTitle.textContent = '引用文档';
-    refList.appendChild(refTitle);
-    
-    results.forEach((item) => {
-      const refItem = document.createElement('div');
-      refItem.className = 'ref-item';
-      const fileName = document.createElement('span');
-      fileName.className = 'ref-filename';
-      fileName.textContent = String(item.filename || 'unknown');
-      const similarity = document.createElement('span');
-      similarity.className = 'ref-similarity';
-      const simValue = item.similarity != null ? (item.similarity * 100).toFixed(1) + '%' : '-';
-      similarity.textContent = simValue;
-      refItem.appendChild(fileName);
-      refItem.appendChild(similarity);
-      refList.appendChild(refItem);
-    });
-    
-    const refContainer = document.createElement('div');
-    refContainer.className = 'ref-container';
-    refContainer.appendChild(refBtn);
-    refContainer.appendChild(refList);
-    
-    actionsBar.appendChild(copyBtn);
-    actionsBar.appendChild(refContainer);
-    aiContent.appendChild(actionsBar);
+    aiContent.appendChild(createActionsBar(aiBubble, results));
   }
-
-  if (thinkingSummary) {
-    appendThinkingSummary(aiContent, thinkingSummary);
-  }
-  
   aiMsg.appendChild(aiAvatar);
   aiMsg.appendChild(aiContent);
   messagesContainer.appendChild(aiMsg);
@@ -965,6 +1198,16 @@ async function refreshHistory() {
   renderHistory(data.sessions || []);
 }
 
+function scheduleAutoRefreshHistory(delay = 250) {
+  if (historyRefreshTimer) {
+    window.clearTimeout(historyRefreshTimer);
+  }
+  historyRefreshTimer = window.setTimeout(() => {
+    refreshHistory().catch(() => {});
+    historyRefreshTimer = null;
+  }, Math.max(0, Number(delay) || 0));
+}
+
 async function deleteHistory(id) {
   await apiRequest(`/history/${encodeURIComponent(id)}`, { method: 'DELETE' });
   showToast('记录已删除');
@@ -987,6 +1230,7 @@ async function runChatStream(body) {
   }
 
   let answer = '';
+  let thinking = '';
   const reader = resp.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
@@ -1013,14 +1257,45 @@ async function runChatStream(body) {
       if (!delta) return;
       
       answer += delta;
+      const split = splitMixedAnswerAndThinking(answer, thinking);
+      answer = split.answer;
+      thinking = split.thinking;
       updateLastAssistantMessage(answer);
+      if (thinking) {
+        updateLastAssistantThinking(thinking, false);
+      }
+      return;
+    }
+    if (eventType === 'thinking_delta') {
+      const delta = String(payload.delta || '');
+      if (!delta) return;
+      thinking += delta;
+      updateLastAssistantThinking(thinking, false);
+      setAssistantBubbleAnswer(
+        document.querySelector('#chat-messages .chat-message.assistant:last-child .message-content'),
+        ''
+      );
       return;
     }
     if (eventType === 'done') {
+      const finalAnswer = String(payload.answer || '').trim();
+      if (finalAnswer) {
+        answer = finalAnswer;
+      }
       const summary = String(payload.thinking_summary || '').trim();
+      const finalThinking = String(payload.thinking || '').trim() || thinking;
+      const split = splitMixedAnswerAndThinking(answer, finalThinking);
+      answer = split.answer;
+      thinking = split.thinking;
+
+      updateLastAssistantMessage(answer);
+      if (thinking) {
+        updateLastAssistantThinking(thinking, true);
+      }
       if (summary) {
         addThinkingSummaryToLastAssistant(summary);
       }
+      scheduleAutoRefreshHistory(120);
     }
   };
 
@@ -1049,6 +1324,12 @@ async function runChatStream(body) {
       idx = buffer.indexOf('\n\n');
     }
   }
+
+  // Fallback refresh in case stream closes without explicit done event.
+  if (thinking) {
+    updateLastAssistantThinking(thinking, true);
+  }
+  scheduleAutoRefreshHistory(200);
 }
 
 async function ensureSessionId(userId) {
@@ -1209,7 +1490,7 @@ function updateChatModelSelect(configs) {
   const select = document.getElementById('chat-model-config');
   if (!select) return;
   const prev = select.value;
-  select.innerHTML = '<option value="">-- 自动/内置模型 --</option>';
+  select.innerHTML = '<option value="">-- 使用默认模型配置 --</option>';
   if (Array.isArray(configs)) {
     for (const cfg of configs) {
       const option = document.createElement('option');
@@ -1280,13 +1561,13 @@ function renderModelConfigsTable(configs) {
       deleteModelConfig(cfg.id).catch((err) => showToast(err.message, false));
     });
 
-    actionCell.style.display = 'flex';
-    actionCell.style.gap = '6px';
-    actionCell.style.flexWrap = 'wrap';
-    actionCell.appendChild(editBtn);
-    actionCell.appendChild(testBtn);
-    actionCell.appendChild(defaultBtn);
-    actionCell.appendChild(deleteBtn);
+    const actionsWrap = document.createElement('div');
+    actionsWrap.className = 'table-actions-wrap';
+    actionsWrap.appendChild(editBtn);
+    actionsWrap.appendChild(testBtn);
+    actionsWrap.appendChild(defaultBtn);
+    actionsWrap.appendChild(deleteBtn);
+    actionCell.appendChild(actionsWrap);
     tbody.appendChild(tr);
   }
 }
@@ -1524,10 +1805,11 @@ function renderChunksTable(chunks) {
       deleteChunk(item.id).catch((err) => showToast(err.message, false));
     });
 
-    actionCell.appendChild(editBtn);
-    actionCell.appendChild(deleteBtn);
-    actionCell.style.display = 'flex';
-    actionCell.style.gap = '8px';
+    const actionsWrap = document.createElement('div');
+    actionsWrap.className = 'table-actions-wrap';
+    actionsWrap.appendChild(editBtn);
+    actionsWrap.appendChild(deleteBtn);
+    actionCell.appendChild(actionsWrap);
 
     tr.appendChild(idCell);
     tr.appendChild(nameCell);
@@ -2156,10 +2438,27 @@ function bindEvents() {
       }
     });
   }
+
+  if (sourceDialogCloseBtn) {
+    sourceDialogCloseBtn.addEventListener('click', closeSourceDialog);
+  }
+  if (sourceDialogCancelBtn) {
+    sourceDialogCancelBtn.addEventListener('click', closeSourceDialog);
+  }
+  if (sourceDialog) {
+    sourceDialog.addEventListener('click', (event) => {
+      if (event.target === sourceDialog) {
+        closeSourceDialog();
+      }
+    });
+  }
   
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && chunkDialog && chunkDialog.classList.contains('open')) {
       closeChunkDialog();
+    }
+    if (event.key === 'Escape' && sourceDialog && sourceDialog.classList.contains('open')) {
+      closeSourceDialog();
     }
     const chunkManagerModal = document.getElementById('chunk-manager-modal');
     if (event.key === 'Escape' && chunkManagerModal && chunkManagerModal.classList.contains('show')) {

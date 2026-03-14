@@ -485,6 +485,25 @@ class KnowledgeBase:
             pass
 
     @staticmethod
+    def _is_local_model_missing_error(exc: Exception) -> bool:
+        exc_type = type(exc).__name__.lower()
+        if "notfound" in exc_type or "localentry" in exc_type:
+            return True
+        message = str(exc).lower()
+        missing_markers = (
+            "not found in local",
+            "could not find",
+            "couldn't find",
+            "can't find",
+            "no such file or directory",
+            "is not the path to a directory containing",
+            "does not appear to have a file named",
+            "cannot find the requested files",
+            "cannot find requested files",
+        )
+        return any(marker in message for marker in missing_markers)
+
+    @staticmethod
     def _normalize_filename(name: str | None) -> str:
         return Path(str(name or "").strip()).name
 
@@ -668,7 +687,7 @@ class KnowledgeBase:
             )
             logger.info("Embedding model loaded from local cache: %s", self.embedding_model_name)
         except Exception as local_exc:
-            if not self.auto_download_missing_models:
+            if (not self.auto_download_missing_models) or (not self._is_local_model_missing_error(local_exc)):
                 raise
             logger.warning(
                 "Embedding model not found or incomplete in local cache, will auto-download: %s",
@@ -745,7 +764,7 @@ class KnowledgeBase:
                 )
             logger.info("Reranker model loaded from local cache: %s", self.reranker_model_name)
         except Exception as local_exc:
-            if not self.auto_download_missing_models:
+            if (not self.auto_download_missing_models) or (not self._is_local_model_missing_error(local_exc)):
                 raise
             logger.warning(
                 "Reranker model not found or incomplete in local cache, will auto-download: %s",

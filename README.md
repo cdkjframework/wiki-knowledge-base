@@ -50,6 +50,22 @@ HTTP API (src/api.py)
 pip install -r requirements.txt
 ```
 
+### 自定义 FAISS GPU Wheel
+
+如果目标环境需要自定义构建的 FAISS GPU wheel，可以使用仓库内置脚本：
+
+```powershell
+.\build_faiss_gpu_wheel.ps1 -GpuSupport CUDA
+```
+
+或者在打包部署包时一并构建并带入部署目录：
+
+```powershell
+.\build_wheel.ps1 -BuildCustomFaissGpuWheel -FaissGpuSupport CUDA
+```
+
+详细参数与前置要求见 [docs/FAISS_GPU_WHEEL.md](docs/FAISS_GPU_WHEEL.md)。
+
 ### 2) 配置
 
 按需修改 config.json，包括数据库、Redis、模型与上下文配置。

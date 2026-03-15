@@ -1,7 +1,15 @@
 param(
     [switch]$Clean = $true,
     [string]$OutputDir = "./dist",
-    [string]$BundleName = "knowledge-base-deploy"
+    [string]$BundleName = "knowledge-base-deploy",
+    [switch]$BuildCustomFaissGpuWheel = $false,
+    [string]$CustomFaissWheelPath = "",
+    [ValidateSet("CUDA", "ROCM", "CUVS")]
+    [string]$FaissGpuSupport = "CUDA",
+    [string]$FaissOptLevels = "generic,avx2",
+    [string]$FaissWheelOutputDir = "./dist/faiss-gpu-wheel",
+    [string]$FaissWheelWorkspace = "./build/faiss-wheels-src",
+    [string]$FaissWheelRepoRef = "main"
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +18,20 @@ $OutputPath = Join-Path $ProjectRoot $OutputDir
 $PyprojectPath = Join-Path $ProjectRoot "pyproject.toml"
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $PythonExe = if (Test-Path $VenvPython) { $VenvPython } else { "python" }
+
+function Resolve-ProjectPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+
+    return Join-Path $ProjectRoot $Path
+}
 
 function Write-Info {
     param([string]$Message)
@@ -29,6 +51,59 @@ function Write-Error-Custom {
 function Write-Warning-Custom {
     param([string]$Message)
     Write-Host "[!] $Message" -ForegroundColor Yellow
+}
+
+function Resolve-BundleFaissWheelPath {
+    param([string]$WheelPath)
+
+    if ([string]::IsNullOrWhiteSpace($WheelPath)) {
+        return $null
+    }
+
+    $resolvedPath = Resolve-ProjectPath $WheelPath
+    if (-not (Test-Path $resolvedPath)) {
+        throw "Custom FAISS wheel not found: $resolvedPath"
+    }
+
+    return (Resolve-Path $resolvedPath).Path
+}
+
+function Invoke-CustomFaissWheelBuild {
+    param(
+        [string]$GpuSupport,
+        [string]$OptLevels,
+        [string]$WheelOutputDir,
+        [string]$WheelWorkspace,
+        [string]$RepoRef
+    )
+
+    $builderScript = Join-Path $ProjectRoot "build_faiss_gpu_wheel.ps1"
+    if (-not (Test-Path $builderScript)) {
+        throw "Custom FAISS wheel builder script not found: $builderScript"
+    }
+
+    $resolvedOutputDir = Resolve-ProjectPath $WheelOutputDir
+    $resolvedWorkspace = Resolve-ProjectPath $WheelWorkspace
+
+    Write-Info "Building custom FAISS GPU wheel..."
+    $builderOutput = & $builderScript `
+        -GpuSupport $GpuSupport `
+        -FaissOptLevels $OptLevels `
+        -OutputDir $resolvedOutputDir `
+        -WorkDir $resolvedWorkspace `
+        -RepoRef $RepoRef `
+        -PythonExe $PythonExe
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Custom FAISS GPU wheel build failed"
+    }
+
+    $wheelPath = ($builderOutput | Select-Object -Last 1)
+    if ([string]::IsNullOrWhiteSpace($wheelPath) -or -not (Test-Path $wheelPath)) {
+        throw "Custom FAISS GPU wheel build completed but no wheel path was returned"
+    }
+
+    return (Resolve-Path $wheelPath).Path
 }
 
 function Copy-IfExists {
@@ -81,12 +156,17 @@ function New-TarGzArchive {
 }
 
 function New-DeployScripts {
-    param([string]$Destination)
+    param(
+        [string]$Destination,
+        [switch]$IncludeBundledFaissWheel
+    )
 
     $installScript = @'
 param(
     [switch]$SkipVenv = $false,
-    [switch]$SkipCudaTorch = $false
+        [switch]$SkipCudaTorch = $false,
+        [switch]$ForceCustomFaissWheel = $false,
+        [string]$CustomFaissWheel = ""
 )
 
 function Select-PythonCommand {
@@ -179,6 +259,71 @@ function Select-PythonCommand {
     }
 }
 
+function Resolve-CustomFaissWheel {
+    param(
+        [string]$BasePath,
+        [string]$WheelPath,
+        [switch]$ForceAutoDetect
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($WheelPath)) {
+        $resolvedPath = if ([System.IO.Path]::IsPathRooted($WheelPath)) {
+            $WheelPath
+        } else {
+            Join-Path $BasePath $WheelPath
+        }
+
+        if (-not (Test-Path $resolvedPath)) {
+            throw "Custom FAISS wheel not found: $resolvedPath"
+        }
+
+        return (Resolve-Path $resolvedPath).Path
+    }
+
+    if ($ForceAutoDetect) {
+        $candidate = Get-ChildItem -Path $BasePath -Filter "faiss*.whl" -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $candidate) {
+            throw "ForceCustomFaissWheel was set but no faiss*.whl was found in $BasePath. Use -CustomFaissWheel to specify the wheel path."
+        }
+
+        return $candidate.FullName
+    }
+
+    return $null
+}
+
+function Install-FaissPackage {
+    param(
+        [string]$BasePath,
+        [string]$WheelPath,
+        [switch]$ForceAutoDetect
+    )
+
+    $customWheel = Resolve-CustomFaissWheel -BasePath $BasePath -WheelPath $WheelPath -ForceAutoDetect:$ForceAutoDetect
+    if ($customWheel) {
+        Write-Host "[*] Installing custom FAISS wheel: $customWheel" -ForegroundColor Cyan
+        pip install --force-reinstall --no-deps $customWheel
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install custom FAISS wheel: $customWheel"
+        }
+        return
+    }
+
+    Write-Host "[*] Ensuring faiss-cpu==1.8.0 is installed..." -ForegroundColor Cyan
+    pip install --force-reinstall faiss-cpu==1.8.0
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install faiss-cpu"
+    }
+}
+
+function Ensure-NumpyCompat {
+    Write-Host "[*] Enforcing NumPy compatibility (numpy==1.26.4)..." -ForegroundColor Cyan
+    pip install --force-reinstall --no-deps numpy==1.26.4
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install numpy==1.26.4"
+    }
+}
+
 $ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptPath
 
@@ -212,35 +357,31 @@ if (-not $SkipCudaTorch) {
 
     if ($hasNvidia) {
         Write-Host "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121)..." -ForegroundColor Cyan
-        pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121
+        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[!] CUDA torch install failed, keep current torch package" -ForegroundColor Yellow
         }
 
-        Write-Host "[*] NVIDIA GPU detected, trying FAISS GPU package..." -ForegroundColor Cyan
-        pip install --force-reinstall faiss-gpu==1.8.0
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[!] faiss-gpu install failed, fallback to faiss-cpu" -ForegroundColor Yellow
-            pip install --force-reinstall faiss-cpu==1.8.0
-            if ($LASTEXITCODE -ne 0) {
-                throw "Failed to install both faiss-gpu and faiss-cpu"
-            }
+        if (-not $ForceCustomFaissWheel -and [string]::IsNullOrWhiteSpace($CustomFaissWheel)) {
+            Write-Host "[!] PyPI does not provide a matching faiss-gpu wheel here; use -CustomFaissWheel or -ForceCustomFaissWheel to install a local GPU build." -ForegroundColor Yellow
         }
     } elseif ($hasAmd) {
         Write-Host "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0)..." -ForegroundColor Cyan
-        pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0
+        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[!] ROCm torch install failed, keep current torch package" -ForegroundColor Yellow
         }
-        Write-Host "[!] faiss-gpu is not supported on AMD ROCm, using faiss-cpu" -ForegroundColor Yellow
-        pip install --force-reinstall faiss-cpu==1.8.0
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to install faiss-cpu"
+
+        if (-not $ForceCustomFaissWheel -and [string]::IsNullOrWhiteSpace($CustomFaissWheel)) {
+            Write-Host "[!] No custom ROCm FAISS wheel was provided, using faiss-cpu" -ForegroundColor Yellow
         }
     }
 }
 
-$wheel = Get-ChildItem -Path $ScriptPath -Filter "*.whl" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Install-FaissPackage -BasePath $ScriptPath -WheelPath $CustomFaissWheel -ForceAutoDetect:$ForceCustomFaissWheel
+Ensure-NumpyCompat
+
+$wheel = Get-ChildItem -Path $ScriptPath -Filter "knowledge_base-*.whl" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($wheel) {
     Write-Host "[*] Installing wheel package: $($wheel.Name)" -ForegroundColor Cyan
     pip install --force-reinstall --no-deps $wheel.FullName
@@ -248,11 +389,58 @@ if ($wheel) {
         throw "pip install wheel failed"
     }
 } else {
-    throw "No wheel found in current directory"
+    throw "No knowledge_base wheel found in current directory"
 }
 
 Write-Host "[+] Install completed" -ForegroundColor Green
 '@
+
+    $installGpuPsScript = @'
+param(
+    [switch]$SkipVenv = $false,
+    [switch]$SkipCudaTorch = $false,
+    [string]$CustomFaissWheel = ""
+)
+
+$ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+$installScriptPath = Join-Path $ScriptPath "install.ps1"
+
+if (-not (Test-Path $installScriptPath)) {
+    throw "install.ps1 not found: $installScriptPath"
+}
+
+$invokeArgs = @{}
+if ($SkipVenv) {
+    $invokeArgs.SkipVenv = $true
+}
+if ($SkipCudaTorch) {
+    $invokeArgs.SkipCudaTorch = $true
+}
+if ([string]::IsNullOrWhiteSpace($CustomFaissWheel)) {
+    $invokeArgs.ForceCustomFaissWheel = $true
+} else {
+    $invokeArgs.CustomFaissWheel = $CustomFaissWheel
+}
+
+& $installScriptPath @invokeArgs
+'@
+
+    $installGpuBatScript = @"
+@echo off
+setlocal
+set "SCRIPT_DIR=%~dp0"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%install.ps1" -ForceCustomFaissWheel %*
+set "EXIT_CODE=%ERRORLEVEL%"
+
+if not "%EXIT_CODE%"=="0" (
+    echo [x] GPU-aware install failed with exit code %EXIT_CODE%
+) else (
+    echo [+] GPU-aware install completed
+)
+
+exit /b %EXIT_CODE%
+"@
 
     $runPsScript = @'
 $ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -304,6 +492,38 @@ endlocal
         $installShScript = @'
 #!/usr/bin/env bash
 set -euo pipefail
+
+SKIP_VENV=0
+SKIP_CUDA_TORCH=0
+FORCE_CUSTOM_FAISS_WHEEL=0
+CUSTOM_FAISS_WHEEL=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-venv)
+            SKIP_VENV=1
+            ;;
+        --skip-cuda-torch)
+            SKIP_CUDA_TORCH=1
+            ;;
+        --force-custom-faiss-wheel)
+            FORCE_CUSTOM_FAISS_WHEEL=1
+            ;;
+        --custom-faiss-wheel)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "[x] --custom-faiss-wheel requires a wheel path" >&2
+                exit 1
+            fi
+            CUSTOM_FAISS_WHEEL="$1"
+            ;;
+        *)
+            echo "[x] Unknown argument: $1" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -376,10 +596,58 @@ select_python() {
     done
 }
 
+resolve_custom_faiss_wheel() {
+    if [[ -n "$CUSTOM_FAISS_WHEEL" ]]; then
+        local candidate
+        if [[ "$CUSTOM_FAISS_WHEEL" = /* ]]; then
+            candidate="$CUSTOM_FAISS_WHEEL"
+        else
+            candidate="$SCRIPT_DIR/$CUSTOM_FAISS_WHEEL"
+        fi
+
+        if [[ ! -f "$candidate" ]]; then
+            echo "[x] Custom FAISS wheel not found: $candidate" >&2
+            exit 1
+        fi
+
+        printf '%s\n' "$candidate"
+        return
+    fi
+
+    if [[ $FORCE_CUSTOM_FAISS_WHEEL -eq 1 ]]; then
+        local candidate
+        candidate="$(find "$SCRIPT_DIR" -maxdepth 1 -type f -name 'faiss*.whl' | head -n 1 || true)"
+        if [[ -z "$candidate" ]]; then
+            echo "[x] --force-custom-faiss-wheel was set but no faiss*.whl was found in $SCRIPT_DIR" >&2
+            exit 1
+        fi
+
+        printf '%s\n' "$candidate"
+    fi
+}
+
+install_faiss_package() {
+    local custom_wheel
+    custom_wheel="$(resolve_custom_faiss_wheel)"
+    if [[ -n "$custom_wheel" ]]; then
+        echo "[*] Installing custom FAISS wheel: $custom_wheel"
+        pip install --force-reinstall --no-deps "$custom_wheel"
+        return
+    fi
+
+    echo "[*] Ensuring faiss-cpu==1.8.0 is installed..."
+    pip install --force-reinstall --no-deps faiss-cpu==1.8.0
+}
+
+ensure_numpy_compat() {
+    echo "[*] Enforcing NumPy compatibility (numpy==1.26.4)..."
+    pip install --force-reinstall --no-deps numpy==1.26.4
+}
+
 PYTHON_CMD="$(select_python)"
 echo "[*] Using Python: $PYTHON_CMD"
 
-if [[ ! -d ".venv" ]]; then
+if [[ ! -d ".venv" && $SKIP_VENV -eq 0 ]]; then
     echo "[*] Creating virtual environment..."
     "$PYTHON_CMD" -m venv .venv
 fi
@@ -397,27 +665,32 @@ has_amd=0
 command -v nvidia-smi >/dev/null 2>&1 && has_nvidia=1 || true
 command -v rocm-smi  >/dev/null 2>&1 && has_amd=1  || true
 
-if [[ $has_nvidia -eq 1 ]]; then
-    echo "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121)..."
-    pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121 || \
-        echo "[!] CUDA torch install failed, keep current torch package"
+if [[ $SKIP_CUDA_TORCH -eq 0 ]]; then
+    if [[ $has_nvidia -eq 1 ]]; then
+        echo "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121)..."
+        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121 || \
+            echo "[!] CUDA torch install failed, keep current torch package"
 
-    echo "[*] NVIDIA GPU detected, trying FAISS GPU package..."
-    if ! pip install --force-reinstall faiss-gpu==1.8.0; then
-        echo "[!] faiss-gpu install failed, fallback to faiss-cpu"
-        pip install --force-reinstall faiss-cpu==1.8.0
+        if [[ $FORCE_CUSTOM_FAISS_WHEEL -eq 0 && -z "$CUSTOM_FAISS_WHEEL" ]]; then
+            echo "[!] PyPI does not provide a matching faiss-gpu wheel here; use --custom-faiss-wheel or --force-custom-faiss-wheel to install a local GPU build."
+        fi
+    elif [[ $has_amd -eq 1 ]]; then
+        echo "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0)..."
+        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0 || \
+            echo "[!] ROCm torch install failed, keep current torch package"
+
+        if [[ $FORCE_CUSTOM_FAISS_WHEEL -eq 0 && -z "$CUSTOM_FAISS_WHEEL" ]]; then
+            echo "[!] No custom ROCm FAISS wheel was provided, using faiss-cpu"
+        fi
     fi
-elif [[ $has_amd -eq 1 ]]; then
-    echo "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0)..."
-    pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0 || \
-        echo "[!] ROCm torch install failed, keep current torch package"
-    echo "[!] faiss-gpu is not supported on AMD ROCm, using faiss-cpu"
-    pip install --force-reinstall faiss-cpu==1.8.0
 fi
 
-wheel_file="$(ls -t ./*.whl 2>/dev/null | head -n 1 || true)"
+install_faiss_package
+ensure_numpy_compat
+
+wheel_file="$(ls -t ./knowledge_base-*.whl 2>/dev/null | head -n 1 || true)"
 if [[ -z "$wheel_file" ]]; then
-    echo "[x] No wheel found in current directory"
+    echo "[x] No knowledge_base wheel found in current directory"
     exit 1
 fi
 
@@ -425,6 +698,16 @@ echo "[*] Installing wheel package: $(basename "$wheel_file")"
 pip install --force-reinstall --no-deps "$wheel_file"
 
 echo "[+] Install completed"
+'@
+
+    $installGpuShScript = @'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+exec "$SCRIPT_DIR/install.sh" --force-custom-faiss-wheel "$@"
 '@
 
         $runShScript = @'
@@ -453,28 +736,34 @@ fi
     Set-Content -Path (Join-Path $Destination "install.ps1") -Value $installScript -Encoding UTF8
     Set-Content -Path (Join-Path $Destination "run.ps1") -Value $runPsScript -Encoding UTF8
     Set-Content -Path (Join-Path $Destination "run.bat") -Value $runBatScript -Encoding ASCII
-        Set-Content -Path (Join-Path $Destination "install.sh") -Value $installShScript -Encoding UTF8
-        Set-Content -Path (Join-Path $Destination "run.sh") -Value $runShScript -Encoding UTF8
+    if ($IncludeBundledFaissWheel) {
+        Set-Content -Path (Join-Path $Destination "install-gpu.ps1") -Value $installGpuPsScript -Encoding UTF8
+        Set-Content -Path (Join-Path $Destination "install-gpu.bat") -Value $installGpuBatScript -Encoding ASCII
+        Set-Content -Path (Join-Path $Destination "install-gpu.sh") -Value $installGpuShScript -Encoding UTF8
+    }
+    Set-Content -Path (Join-Path $Destination "install.sh") -Value $installShScript -Encoding UTF8
+    Set-Content -Path (Join-Path $Destination "run.sh") -Value $runShScript -Encoding UTF8
 }
 
 function Stage-DeploymentBundle {
     param(
         [string]$Root,
-                [string]$Destination,
-                [string]$WheelPath
+        [string]$Destination,
+        [string]$WheelPath,
+        [string]$FaissWheelPath
     )
 
-        Write-Info "Staging scripts/config files into deployment bundle..."
+    Write-Info "Staging scripts/config files into deployment bundle..."
 
-        if (-not (Test-Path $Destination)) {
-                New-Item -ItemType Directory -Path $Destination | Out-Null
-        }
+    if (-not (Test-Path $Destination)) {
+        New-Item -ItemType Directory -Path $Destination | Out-Null
+    }
 
     $fileList = @(
         "config.json",
-                "config.multi-provider.example.json",
+        "config.multi-provider.example.json",
         "requirements.txt",
-                "README.md",
+        "README.md",
         "manage_service.ps1",
         "manage_service.bat",
         "uninstall.ps1",
@@ -497,13 +786,24 @@ function Stage-DeploymentBundle {
     }
     Copy-Item -Path $WheelPath -Destination $Destination -Force
 
-    New-DeployScripts -Destination $Destination
+    if (-not [string]::IsNullOrWhiteSpace($FaissWheelPath)) {
+        if (-not (Test-Path $FaissWheelPath)) {
+            throw "Custom FAISS wheel file not found: $FaissWheelPath"
+        }
+        Copy-Item -Path $FaissWheelPath -Destination $Destination -Force
+    }
+
+    New-DeployScripts -Destination $Destination -IncludeBundledFaissWheel:(-not [string]::IsNullOrWhiteSpace($FaissWheelPath))
     Write-Success "Deployment files staged in $Destination"
 }
 
 try {
     if (-not (Test-Path $PyprojectPath)) {
         throw "pyproject.toml not found: $PyprojectPath"
+    }
+
+    if ($BuildCustomFaissGpuWheel -and -not [string]::IsNullOrWhiteSpace($CustomFaissWheelPath)) {
+        throw "Use either -BuildCustomFaissGpuWheel or -CustomFaissWheelPath, not both."
     }
 
     Write-Info "Project root: $ProjectRoot"
@@ -520,6 +820,20 @@ try {
         New-Item -ItemType Directory -Path $OutputPath | Out-Null
     }
 
+    $bundleFaissWheelPath = $null
+    if ($BuildCustomFaissGpuWheel) {
+        $bundleFaissWheelPath = Invoke-CustomFaissWheelBuild `
+            -GpuSupport $FaissGpuSupport `
+            -OptLevels $FaissOptLevels `
+            -WheelOutputDir $FaissWheelOutputDir `
+            -WheelWorkspace $FaissWheelWorkspace `
+            -RepoRef $FaissWheelRepoRef
+        Write-Success "Custom FAISS GPU wheel ready: $bundleFaissWheelPath"
+    } elseif (-not [string]::IsNullOrWhiteSpace($CustomFaissWheelPath)) {
+        $bundleFaissWheelPath = Resolve-BundleFaissWheelPath -WheelPath $CustomFaissWheelPath
+        Write-Success "Using provided custom FAISS wheel: $bundleFaissWheelPath"
+    }
+
     Write-Info "Installing wheel build dependencies..."
     & $PythonExe -m pip install --upgrade pip setuptools wheel build
     if ($LASTEXITCODE -ne 0) {
@@ -532,9 +846,9 @@ try {
         throw "Wheel build failed"
     }
 
-    $wheelFiles = Get-ChildItem -Path $OutputPath -Filter "*.whl" | Sort-Object LastWriteTime -Descending
+    $wheelFiles = Get-ChildItem -Path $OutputPath -Filter "knowledge_base-*.whl" | Sort-Object LastWriteTime -Descending
     if (-not $wheelFiles) {
-        throw "Build completed but no .whl file found in $OutputPath"
+        throw "Build completed but no knowledge_base wheel file was found in $OutputPath"
     }
 
     $latestWheel = $wheelFiles[0].FullName
@@ -543,7 +857,7 @@ try {
         Remove-Item -Path $bundlePath -Recurse -Force
     }
 
-    Stage-DeploymentBundle -Root $ProjectRoot -Destination $bundlePath -WheelPath $latestWheel
+    Stage-DeploymentBundle -Root $ProjectRoot -Destination $bundlePath -WheelPath $latestWheel -FaissWheelPath $bundleFaissWheelPath
 
     $archivePath = Join-Path $OutputPath ($BundleName + ".tar.gz")
     Write-Info "Creating tar.gz package..."
@@ -555,6 +869,14 @@ try {
     Write-Host "Generated wheel(s):" -ForegroundColor Cyan
     foreach ($f in $wheelFiles) {
         Write-Host "  - $($f.FullName)"
+    }
+    if ($bundleFaissWheelPath) {
+        Write-Host ""
+        Write-Host "Bundled custom FAISS wheel:" -ForegroundColor Cyan
+        Write-Host "  - $bundleFaissWheelPath"
+        Write-Host ""
+        Write-Host "GPU deployment install command:" -ForegroundColor Cyan
+        Write-Host "  .\install-gpu.ps1"
     }
     Write-Host ""
     Write-Host "Generated tar.gz:" -ForegroundColor Cyan

@@ -333,30 +333,48 @@ class KnowledgeBase:
                     self.local_files_only, cfg_local_only)
         self._configure_hf_offline_mode()
 
+        # Detect AMD ROCm availability (torch ROCm exposes cuda API via HIP)
+        def _torch_has_rocm() -> bool:
+            try:
+                return bool(getattr(torch.version, "hip", None))
+            except Exception:
+                return False
+
+        _rocm_available = _torch_has_rocm() and torch.cuda.is_available()
+        _cuda_available = torch.cuda.is_available() and not _rocm_available
+
         if device:
             self.device = device
         else:
             if str(cfg_device).lower() == "auto":
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                if _cuda_available or _rocm_available:
+                    self.device = "cuda"  # both NVIDIA CUDA and AMD ROCm surface as "cuda"
+                else:
+                    self.device = "cpu"
             else:
                 self.device = str(cfg_device)
+
         logger.info(
-            "Torch runtime: version=%s cuda_build=%s cuda_available=%s device_count=%s",
+            "Torch runtime: version=%s cuda_build=%s cuda_available=%s rocm_build=%s device_count=%s",
             torch.__version__,
             torch.version.cuda,
             torch.cuda.is_available(),
+            getattr(torch.version, "hip", None),
             torch.cuda.device_count(),
         )
-        if str(cfg_device).lower() == "auto" and self.device == "cpu" and torch.version.cuda is None:
-            logger.warning(
-                "CUDA GPU is not available because current torch build is CPU-only (%s). "
-                "Install CUDA wheel, e.g. pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121",
-                torch.__version__,
-            )
+        if str(cfg_device).lower() == "auto" and self.device == "cpu":
+            if torch.version.cuda is None and getattr(torch.version, "hip", None) is None:
+                logger.warning(
+                    "No GPU available: current torch build is CPU-only (%s). "
+                    "For NVIDIA: pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121 ; "
+                    "For AMD ROCm: pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0",
+                    torch.__version__,
+                )
         logger.info(
-            "Inference device selected: %s (cuda_available=%s)",
+            "Inference device selected: %s (cuda_available=%s rocm=%s)",
             self.device,
             torch.cuda.is_available(),
+            _rocm_available,
         )
 
         lm_base = (os.getenv("LM_STUDIO_BASE_URL") or cfg_lm_base or "").strip()

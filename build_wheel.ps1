@@ -202,14 +202,13 @@ if ($LASTEXITCODE -ne 0) {
 
 if (-not $SkipCudaTorch) {
     $hasNvidia = $false
+    $hasAmd = $false
     try {
-        $nvidia = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-        if ($nvidia) {
-            $hasNvidia = $true
-        }
-    } catch {
-        $hasNvidia = $false
-    }
+        if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { $hasNvidia = $true }
+    } catch {}
+    try {
+        if (Get-Command rocm-smi -ErrorAction SilentlyContinue) { $hasAmd = $true }
+    } catch {}
 
     if ($hasNvidia) {
         Write-Host "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121)..." -ForegroundColor Cyan
@@ -226,6 +225,17 @@ if (-not $SkipCudaTorch) {
             if ($LASTEXITCODE -ne 0) {
                 throw "Failed to install both faiss-gpu and faiss-cpu"
             }
+        }
+    } elseif ($hasAmd) {
+        Write-Host "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0)..." -ForegroundColor Cyan
+        pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[!] ROCm torch install failed, keep current torch package" -ForegroundColor Yellow
+        }
+        Write-Host "[!] faiss-gpu is not supported on AMD ROCm, using faiss-cpu" -ForegroundColor Yellow
+        pip install --force-reinstall faiss-cpu==1.8.0
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install faiss-cpu"
         }
     }
 }
@@ -382,7 +392,12 @@ fi
 echo "[*] Installing dependencies..."
 pip install -r requirements.txt
 
-if command -v nvidia-smi >/dev/null 2>&1; then
+has_nvidia=0
+has_amd=0
+command -v nvidia-smi >/dev/null 2>&1 && has_nvidia=1 || true
+command -v rocm-smi  >/dev/null 2>&1 && has_amd=1  || true
+
+if [[ $has_nvidia -eq 1 ]]; then
     echo "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121)..."
     pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121 || \
         echo "[!] CUDA torch install failed, keep current torch package"
@@ -392,6 +407,12 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         echo "[!] faiss-gpu install failed, fallback to faiss-cpu"
         pip install --force-reinstall faiss-cpu==1.8.0
     fi
+elif [[ $has_amd -eq 1 ]]; then
+    echo "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0)..."
+    pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0 || \
+        echo "[!] ROCm torch install failed, keep current torch package"
+    echo "[!] faiss-gpu is not supported on AMD ROCm, using faiss-cpu"
+    pip install --force-reinstall faiss-cpu==1.8.0
 fi
 
 wheel_file="$(ls -t ./*.whl 2>/dev/null | head -n 1 || true)"

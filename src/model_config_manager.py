@@ -342,7 +342,7 @@ class ModelConfigManager:
             {
                 "name": "local-lm-studio",
                 "provider": "lm_studio",
-                "base_url": "http://127.0.0.1:1234/v1",
+                "base_url": "http://127.0.0.1:1234",
                 "model_name": "local-model",
                 "description": "本地模型（LM Studio/OpenAI compatible）",
                 "is_default": True,

@@ -63,7 +63,9 @@ function Invoke-Build {
     $ConfigFiles = @(
         "config.json",
         "requirements.txt",
-        "README.md"
+        "README.md",
+        "uninstall.ps1",
+        "uninstall.bat"
     )
     
     foreach ($File in $ConfigFiles) {
@@ -243,7 +245,9 @@ Once started, the server listens on: `http://127.0.0.1:5000`
 ├── requirements.txt     # Python dependencies
 ├── run.ps1             # PowerShell startup script
 ├── run.bat             # Command prompt startup script
-└── setup.ps1           # Setup/initialization script
+├── setup.ps1           # Setup/initialization script
+├── uninstall.ps1       # PowerShell uninstall script
+└── uninstall.bat       # Batch uninstall script
 ```
 
 ## Troubleshooting

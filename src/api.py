@@ -33,7 +33,23 @@ except ImportError:  # pragma: no cover
     from knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_project_root() -> Path:
+    env_root = str(os.getenv("KB_PROJECT_ROOT") or "").strip()
+    if env_root:
+        p = Path(env_root).expanduser().resolve()
+        if p.exists():
+            return p
+
+    cwd = Path.cwd().resolve()
+    if (cwd / "config.json").exists():
+        return cwd
+
+    return Path(__file__).resolve().parent.parent
+
+
+PROJECT_ROOT = _resolve_project_root()
 WEB_DIR = PROJECT_ROOT / "web"
 DOCS_DIR = PROJECT_ROOT / "docs"
 ASSETS_DIR = PROJECT_ROOT / "assets"
@@ -47,6 +63,9 @@ class KnowledgeBaseApi:
         self._session_store: SessionIdStore = self._init_session_store()
         self._model_config_manager: ModelConfigManager | None = self._init_model_config_manager()
         config = self._load_project_config()
+        self._search_cfg = config.get("search", {})
+        if not isinstance(self._search_cfg, dict):
+            self._search_cfg = {}
         self._chat_context_cfg = config.get("chat_context", {})
         if not isinstance(self._chat_context_cfg, dict):
             self._chat_context_cfg = {}
@@ -61,6 +80,19 @@ class KnowledgeBaseApi:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _parse_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        return default
 
     def _append_history(
         self,
@@ -99,6 +131,18 @@ class KnowledgeBaseApi:
         except Exception:
             return None
         return value if value > 0 else None
+
+    def _min_source_similarity(self) -> float:
+        raw = self._search_cfg.get("min_source_similarity", 0.0)
+        try:
+            value = float(raw)
+        except Exception:
+            return 0.0
+        if value < 0.0:
+            return 0.0
+        if value > 1.0:
+            return 1.0
+        return value
 
     @staticmethod
     def _extract_thinking_summary(text: str) -> tuple[str, str | None]:
@@ -386,13 +430,33 @@ class KnowledgeBaseApi:
 
     @staticmethod
     def _load_project_config() -> Dict[str, Any]:
-        cfg_path = Path(__file__).resolve().parent.parent / "config.json"
+        cfg_path = PROJECT_ROOT / "config.json"
         if not cfg_path.exists():
             return {}
         try:
             return json.loads(cfg_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    @staticmethod
+    def _persist_auto_create_database_flag(config: Dict[str, Any], enabled: bool) -> None:
+        if not isinstance(config, dict):
+            return
+        db_cfg = config.get("db")
+        if not isinstance(db_cfg, dict):
+            return
+        if db_cfg.get("auto_create_database") == bool(enabled):
+            return
+        db_cfg["auto_create_database"] = bool(enabled)
+        cfg_path = PROJECT_ROOT / "config.json"
+        try:
+            cfg_path.write_text(
+                json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            logger.info("Updated config: db.auto_create_database=%s", enabled)
+        except Exception as exc:
+            logger.warning("Failed to persist db.auto_create_database=%s: %s", enabled, exc)
 
     def _init_history_store(self):
         config = self._load_project_config()
@@ -425,17 +489,37 @@ class KnowledgeBaseApi:
         database = os.getenv(env_prefix + "DATABASE") or db_type_cfg.get("database", "knowledge_base")
         table = os.getenv("KB_HISTORY_TABLE") or db_cfg.get("table", "kb_session_messages")
         timeout = os.getenv(env_prefix + "CONNECT_TIMEOUT") or db_type_cfg.get("connect_timeout", 5)
+        client_encoding = os.getenv(env_prefix + "CLIENT_ENCODING") or db_type_cfg.get("client_encoding")
+        options = os.getenv(env_prefix + "OPTIONS") or db_type_cfg.get("options")
+        auto_create_database_raw = os.getenv("KB_DB_AUTO_CREATE_DATABASE")
+        if auto_create_database_raw is None:
+            auto_create_database_raw = db_cfg.get("auto_create_database", False)
+        auto_create_database = self._parse_bool(auto_create_database_raw, default=False)
 
-        store = DatabaseHistoryStore(
-            backend=backend,
-            host=str(host),
-            port=int(port),
-            user=str(user),
-            password=str(password),
-            database=str(database),
-            table=str(table),
-            connect_timeout=int(timeout),
-        )
+        try:
+            store = DatabaseHistoryStore(
+                backend=backend,
+                host=str(host),
+                port=int(port),
+                user=str(user),
+                password=str(password),
+                database=str(database),
+                table=str(table),
+                connect_timeout=int(timeout),
+                client_encoding=str(client_encoding) if client_encoding else None,
+                options=str(options) if options else None,
+                auto_create_database=auto_create_database,
+            )
+            if auto_create_database and store.did_auto_create_database():
+                self._persist_auto_create_database_flag(config, enabled=False)
+        except Exception as exc:
+            logger.warning(
+                "History storage backend failed (%s). Falling back to memory: %s",
+                backend,
+                exc,
+            )
+            return InMemoryHistoryStore()
+
         logger.info(
             "History storage backend: %s (%s:%s/%s table=%s)",
             backend,
@@ -528,6 +612,12 @@ class KnowledgeBaseApi:
         password = os.getenv(env_prefix + "PASSWORD") or db_type_cfg.get("password", "")
         database = os.getenv(env_prefix + "DATABASE") or db_type_cfg.get("database", "knowledge_base")
         timeout = os.getenv(env_prefix + "CONNECT_TIMEOUT") or db_type_cfg.get("connect_timeout", 5)
+        client_encoding = os.getenv(env_prefix + "CLIENT_ENCODING") or db_type_cfg.get("client_encoding")
+        options = os.getenv(env_prefix + "OPTIONS") or db_type_cfg.get("options")
+        auto_create_database_raw = os.getenv("KB_DB_AUTO_CREATE_DATABASE")
+        if auto_create_database_raw is None:
+            auto_create_database_raw = db_cfg.get("auto_create_database", False)
+        auto_create_database = self._parse_bool(auto_create_database_raw, default=False)
 
         try:
             db_connection = DatabaseConnection(
@@ -538,6 +628,9 @@ class KnowledgeBaseApi:
                 password=str(password),
                 database=str(database),
                 connect_timeout=int(timeout),
+                client_encoding=str(client_encoding) if client_encoding else None,
+                options=str(options) if options else None,
+                auto_create_database=auto_create_database,
             )
             manager = ModelConfigManager(db_connection)
             logger.info(
@@ -692,21 +785,26 @@ class KnowledgeBaseApi:
                 break
         return "\n\n".join(blocks).strip()
 
+    def _base_system_prompt(self, with_context: bool) -> str:
+        if with_context:
+            return (
+                "你是知识库问答助手。所有输出都必须使用简体中文。"
+                "只能依据提供的知识库上下文回答问题。"
+                "如果证据不足，请明确回答：根据当前知识库无法确定。"
+                "不要编造，不要脱离上下文扩展。"
+            )
+        return "你是知识库问答助手，所有输出必须使用简体中文。若知识库没有足够依据，请明确回答：根据当前知识库无法确定。"
+
     def _build_chat_prompts(
         self, question: str, results: Sequence[Dict[str, Any]]
     ) -> tuple[str, str]:
         context = self._build_context(results)
         if not context:
             return (
-                "你是知识库问答助手，所有输出必须使用简体中文。若知识库没有足够依据，请明确回答：根据当前知识库无法确定。",
+                self._base_system_prompt(with_context=False),
                 f"用户问题：{question}\n\n当前未检索到相关知识库内容。请使用简体中文明确说明根据当前知识库无法确定答案。",
             )
-        system_prompt = (
-            "你是知识库问答助手。所有输出都必须使用简体中文。"
-            "只能依据提供的知识库上下文回答问题。"
-            "如果证据不足，请明确回答：根据当前知识库无法确定。"
-            "不要编造，不要脱离上下文扩展。"
-        )
+        system_prompt = self._base_system_prompt(with_context=True)
         user_prompt = (
             f"用户问题：{question}\n\n"
             f"知识库上下文：\n{context}\n\n"
@@ -970,6 +1068,8 @@ class KnowledgeBaseApi:
                 relevance_threshold=relevance_threshold,
             )
             logger.debug("检索到 %d 个原始结果", len(raw))
+            min_similarity = self._min_source_similarity()
+            logger.debug("来源最小相似度阈值: %s", min_similarity)
             
             ranked_results = []
             result_items = []
@@ -977,6 +1077,14 @@ class KnowledgeBaseApi:
                 logger.debug("处理检索结果 #%d: filename=%s, distance=%.4f", idx, fn, distance_raw)
                 distance = max(0.0, float(distance_raw))
                 similarity = self._distance_to_similarity(distance)
+                if similarity < min_similarity:
+                    logger.debug(
+                        "过滤低相似度结果: filename=%s similarity=%.4f < min_source_similarity=%.4f",
+                        fn,
+                        similarity,
+                        min_similarity,
+                    )
+                    continue
                 chunk_text = str(text or "")
                 ranked_results.append({"filename": fn, "text": chunk_text, "score": similarity})
                 result_items.append(
@@ -1091,11 +1199,14 @@ class KnowledgeBaseApi:
             k=k,
             relevance_threshold=relevance_threshold,
         )
+        min_similarity = self._min_source_similarity()
         ranked_results = []
         result_items = []
         for fn, text, distance_raw in raw:
             distance = max(0.0, float(distance_raw))
             similarity = self._distance_to_similarity(distance)
+            if similarity < min_similarity:
+                continue
             chunk_text = str(text or "")
             ranked_results.append({"filename": fn, "text": chunk_text, "score": similarity})
             result_items.append(

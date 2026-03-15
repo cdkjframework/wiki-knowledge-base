@@ -901,7 +901,7 @@ input.size-small {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  z-index: 20;
+  z-index: 1100;
   backdrop-filter: blur(6px);
 }
 
@@ -958,6 +958,30 @@ input.size-small {
   gap: 10px;
   height: 70vh;
   overflow: auto;
+}
+
+#chunk-dialog .dialog-panel {
+  max-height: 88vh;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+#chunk-dialog .dialog-body {
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#chunk-dialog .dialog-body .field.full {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+#chunk-dialog-text {
+  height: 100%;
+  min-height: 320px;
+  resize: vertical;
 }
 
 .dialog-footer {

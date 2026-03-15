@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .connection import DatabaseConnection
 from ..interfaces import HistoryStore
@@ -17,6 +17,9 @@ class DatabaseHistoryStore(HistoryStore):
         database: str,
         table: str = "kb_session_messages",
         connect_timeout: int = 5,
+        client_encoding: Optional[str] = None,
+        options: Optional[str] = None,
+        auto_create_database: bool = True,
     ):
         table_name = (table or "").strip()
         if not _VALID_TABLE_RE.match(table_name):
@@ -32,8 +35,14 @@ class DatabaseHistoryStore(HistoryStore):
             password=password,
             database=database,
             connect_timeout=connect_timeout,
+            client_encoding=client_encoding,
+            options=options,
+            auto_create_database=auto_create_database,
         )
         self._ensure_table()
+
+    def did_auto_create_database(self) -> bool:
+        return self._conn.did_auto_create_database()
 
     def _ensure_table(self) -> None:
         """创建主表（sessions）和子表（messages）"""

@@ -8,3 +8,11 @@ kb_store_test/
 .vscode/
 logs/
 models/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.whl
+*.tar.gz
+requirements copy.txt

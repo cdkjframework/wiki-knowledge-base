@@ -75,7 +75,7 @@ if exist "%PROJECT_ROOT%web" (
 
 REM Copy configuration files
 echo [*] Copying configuration files...
-for %%F in (config.json requirements.txt README.md) do (
+for %%F in (config.json requirements.txt README.md uninstall.ps1 uninstall.bat) do (
     if exist "%PROJECT_ROOT%%%F" (
         copy "%PROJECT_ROOT%%%F" "%OUTPUT_DIR%\%%F" >nul
         echo [+] Copied %%F
@@ -265,7 +265,9 @@ goto :eof
     echo ├── requirements.txt     # Python dependencies
     echo ├── run.ps1             # PowerShell startup script
     echo ├── run.bat             # Command prompt startup script
-    echo └── setup.ps1           # Setup/initialization script
+    echo ├── setup.ps1           # Setup/initialization script
+    echo ├── uninstall.ps1       # PowerShell uninstall script
+    echo └── uninstall.bat       # Batch uninstall script
     echo ```
     echo.
     echo ## Troubleshooting

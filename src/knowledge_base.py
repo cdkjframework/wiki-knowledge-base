@@ -4,11 +4,17 @@ import math
 import os
 import re
 import tempfile
+import warnings
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 from xml.etree import ElementTree as ET
+
+# Work around Windows OpenMP runtime conflicts (libomp vs libiomp5) that can
+# happen when mixing binary wheels (e.g. torch/faiss/tokenizers).
+if os.name == "nt":
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 try:
     import faiss  # type: ignore
@@ -42,6 +48,14 @@ except Exception:  # pragma: no cover
 
 _BINARY_TEXT_RE = re.compile(rb"[ -~]{4,}")
 logger = logging.getLogger(__name__)
+
+# transformers/huggingface_hub old call paths still pass resume_download.
+warnings.filterwarnings(
+    "ignore",
+    message=r"`resume_download` is deprecated",
+    category=FutureWarning,
+    module=r"huggingface_hub\.file_download",
+)
 
 
 @dataclass
@@ -327,6 +341,19 @@ class KnowledgeBase:
             else:
                 self.device = str(cfg_device)
         logger.info(
+            "Torch runtime: version=%s cuda_build=%s cuda_available=%s device_count=%s",
+            torch.__version__,
+            torch.version.cuda,
+            torch.cuda.is_available(),
+            torch.cuda.device_count(),
+        )
+        if str(cfg_device).lower() == "auto" and self.device == "cpu" and torch.version.cuda is None:
+            logger.warning(
+                "CUDA GPU is not available because current torch build is CPU-only (%s). "
+                "Install CUDA wheel, e.g. pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121",
+                torch.__version__,
+            )
+        logger.info(
             "Inference device selected: %s (cuda_available=%s)",
             self.device,
             torch.cuda.is_available(),
@@ -394,6 +421,9 @@ class KnowledgeBase:
         self._chunks: List[_Chunk] = []
         self._embeddings = np.zeros((0, 1), dtype=np.float32)
         self._index = None
+        self._faiss_gpu_resources = None
+        self._faiss_use_gpu = self._should_use_faiss_gpu()
+        logger.info("FAISS runtime: module=%s gpu_enabled=%s", bool(faiss is not None), self._faiss_use_gpu)
 
         self._load()
         logger.info(
@@ -470,7 +500,6 @@ class KnowledgeBase:
         local_dir = snapshot_download(
             repo_id=model_name,
             cache_dir=str(self.model_cache_dir),
-            resume_download=True,
             local_files_only=False,
             endpoint=endpoint,
         )
@@ -504,6 +533,17 @@ class KnowledgeBase:
         return any(marker in message for marker in missing_markers)
 
     @staticmethod
+    def _is_fast_tokenizer_parse_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        markers = (
+            "modelwrapper",
+            "tokenizerfast.from_file",
+            "data did not match any variant",
+            "untagged enum",
+        )
+        return any(marker in message for marker in markers)
+
+    @staticmethod
     def _normalize_filename(name: str | None) -> str:
         return Path(str(name or "").strip()).name
 
@@ -513,6 +553,24 @@ class KnowledgeBase:
 
     @staticmethod
     def _load_project_config() -> Dict[str, Any]:
+        env_root = str(os.getenv("KB_PROJECT_ROOT") or "").strip()
+        if env_root:
+            project_root = Path(env_root).expanduser().resolve()
+            config_path = project_root / "config.json"
+            if config_path.exists():
+                try:
+                    return json.loads(config_path.read_text(encoding="utf-8"))
+                except Exception:
+                    return {}
+
+        cwd = Path.cwd().resolve()
+        cwd_cfg = cwd / "config.json"
+        if cwd_cfg.exists():
+            try:
+                return json.loads(cwd_cfg.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
         project_root = Path(__file__).resolve().parent.parent
         config_path = project_root / "config.json"
         if not config_path.exists():
@@ -568,7 +626,11 @@ class KnowledgeBase:
 
         np.save(self.embeddings_path, self._embeddings)
         if self._index is not None and faiss is not None:
-            faiss.write_index(self._index, str(self.index_path))
+            idx_to_save = self._index
+            # GPU index cannot be serialized directly; persist as CPU index.
+            if self._faiss_use_gpu and hasattr(faiss, "index_gpu_to_cpu"):
+                idx_to_save = faiss.index_gpu_to_cpu(self._index)
+            faiss.write_index(idx_to_save, str(self.index_path))
 
     def _load(self) -> None:
         self.persist_dir.mkdir(parents=True, exist_ok=True)
@@ -622,7 +684,8 @@ class KnowledgeBase:
 
         if self.index_path.exists() and faiss is not None:
             try:
-                self._index = faiss.read_index(str(self.index_path))
+                cpu_index = faiss.read_index(str(self.index_path))
+                self._index = self._to_faiss_gpu_index(cpu_index)
             except Exception:
                 self._rebuild_index()
         else:
@@ -674,12 +737,30 @@ class KnowledgeBase:
             trust_remote_code=True,
             cache_dir=str(self.model_cache_dir),
         )
+
+        def _load_embed_tokenizer(model_ref: str) -> Any:
+            try:
+                return AutoTokenizer.from_pretrained(
+                    model_ref,
+                    local_files_only=True,
+                    **kwargs,
+                )
+            except Exception as tok_exc:
+                if not self._is_fast_tokenizer_parse_error(tok_exc):
+                    raise
+                logger.warning(
+                    "Embedding fast tokenizer load failed, fallback to slow tokenizer: %s",
+                    tok_exc,
+                )
+                return AutoTokenizer.from_pretrained(
+                    model_ref,
+                    local_files_only=True,
+                    use_fast=False,
+                    **kwargs,
+                )
+
         try:
-            self._embed_tokenizer = AutoTokenizer.from_pretrained(
-                self.embedding_model_name,
-                local_files_only=True,
-                **kwargs,
-            )
+            self._embed_tokenizer = _load_embed_tokenizer(self.embedding_model_name)
             self._embed_model = AutoModel.from_pretrained(
                 self.embedding_model_name,
                 local_files_only=True,
@@ -694,11 +775,7 @@ class KnowledgeBase:
                 local_exc,
             )
             local_snapshot = self._download_model_snapshot(self.embedding_model_name)
-            self._embed_tokenizer = AutoTokenizer.from_pretrained(
-                local_snapshot,
-                local_files_only=True,
-                **kwargs,
-            )
+            self._embed_tokenizer = _load_embed_tokenizer(local_snapshot)
             self._embed_model = AutoModel.from_pretrained(
                 local_snapshot,
                 local_files_only=True,
@@ -743,12 +820,30 @@ class KnowledgeBase:
             trust_remote_code=True,
             cache_dir=str(self.model_cache_dir),
         )
+
+        def _load_rerank_tokenizer(model_ref: str) -> Any:
+            try:
+                return AutoTokenizer.from_pretrained(
+                    model_ref,
+                    local_files_only=True,
+                    **kwargs,
+                )
+            except Exception as tok_exc:
+                if not self._is_fast_tokenizer_parse_error(tok_exc):
+                    raise
+                logger.warning(
+                    "Reranker fast tokenizer load failed, fallback to slow tokenizer: %s",
+                    tok_exc,
+                )
+                return AutoTokenizer.from_pretrained(
+                    model_ref,
+                    local_files_only=True,
+                    use_fast=False,
+                    **kwargs,
+                )
+
         try:
-            self._rerank_tokenizer = AutoTokenizer.from_pretrained(
-                self.reranker_model_name,
-                local_files_only=True,
-                **kwargs,
-            )
+            self._rerank_tokenizer = _load_rerank_tokenizer(self.reranker_model_name)
             try:
                 # Prefer model's native implementation (often provides compute_score for reranker).
                 self._rerank_model = AutoModel.from_pretrained(
@@ -771,11 +866,7 @@ class KnowledgeBase:
                 local_exc,
             )
             local_snapshot = self._download_model_snapshot(self.reranker_model_name)
-            self._rerank_tokenizer = AutoTokenizer.from_pretrained(
-                local_snapshot,
-                local_files_only=True,
-                **kwargs,
-            )
+            self._rerank_tokenizer = _load_rerank_tokenizer(local_snapshot)
             try:
                 self._rerank_model = AutoModel.from_pretrained(
                     local_snapshot,
@@ -1133,15 +1224,48 @@ class KnowledgeBase:
             self.dimension = 1024
         if self._embeddings.size == 0:
             if faiss is not None:
-                self._index = faiss.IndexFlatIP(int(self.dimension))
+                cpu_index = faiss.IndexFlatIP(int(self.dimension))
+                self._index = self._to_faiss_gpu_index(cpu_index)
             else:
                 self._index = _NumpyIndexFlatIP(int(self.dimension))
             return
         if faiss is not None:
-            self._index = faiss.IndexFlatIP(int(self._embeddings.shape[1]))
+            cpu_index = faiss.IndexFlatIP(int(self._embeddings.shape[1]))
+            self._index = self._to_faiss_gpu_index(cpu_index)
         else:
             self._index = _NumpyIndexFlatIP(int(self._embeddings.shape[1]))
         self._index.add(self._embeddings.astype(np.float32, copy=False))
+
+    def _should_use_faiss_gpu(self) -> bool:
+        if faiss is None:
+            return False
+        if self.device != "cuda":
+            return False
+        env = str(os.getenv("KB_FAISS_USE_GPU") or "").strip().lower()
+        if env in {"0", "false", "no", "off"}:
+            return False
+        has_gpu_api = all(
+            hasattr(faiss, name)
+            for name in ("StandardGpuResources", "index_cpu_to_gpu")
+        )
+        return bool(has_gpu_api)
+
+    def _to_faiss_gpu_index(self, cpu_index: Any) -> Any:
+        if faiss is None:
+            return cpu_index
+        if not self._faiss_use_gpu:
+            return cpu_index
+        try:
+            if self._faiss_gpu_resources is None:
+                self._faiss_gpu_resources = faiss.StandardGpuResources()
+            gpu_index = faiss.index_cpu_to_gpu(self._faiss_gpu_resources, 0, cpu_index)
+            logger.info("FAISS index moved to GPU")
+            return gpu_index
+        except Exception as exc:
+            logger.warning("Failed to move FAISS index to GPU, fallback to CPU: %s", exc)
+            self._faiss_use_gpu = False
+            self._faiss_gpu_resources = None
+            return cpu_index
 
     def clear(self) -> None:
         """

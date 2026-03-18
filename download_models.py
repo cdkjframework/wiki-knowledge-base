@@ -19,10 +19,10 @@ try:
     cache_dir = './models/hf_cache'
     
     # 下载 Embedding 模型
-    print("\n1. 下载 Embedding 模型: Qwen/Qwen3-Embedding-0.6B")
+    print("\n1. 下载 Embedding 模型: Qwen/Qwen3-Embedding-4B")
     print("-" * 60)
     tokenizer = AutoTokenizer.from_pretrained(
-        "Qwen/Qwen3-Embedding-0.6B",
+        "Qwen/Qwen3-Embedding-4B",
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,
@@ -30,7 +30,7 @@ try:
     print("✓ Tokenizer 下载完成")
     
     model = AutoModel.from_pretrained(
-        "Qwen/Qwen3-Embedding-0.6B",
+        "Qwen/Qwen3-Embedding-4B",
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,
@@ -38,10 +38,10 @@ try:
     print("✓ Model 下载完成")
     
     # 下载 Reranker 模型
-    print("\n2. 下载 Reranker 模型: Qwen/Qwen3-Reranker-0.6B")
+    print("\n2. 下载 Reranker 模型: Qwen/Qwen3-Reranker-4B")
     print("-" * 60)
     tokenizer = AutoTokenizer.from_pretrained(
-        "Qwen/Qwen3-Reranker-0.6B",
+        "Qwen/Qwen3-Reranker-4B",
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,
@@ -49,7 +49,7 @@ try:
     print("✓ Tokenizer 下载完成")
     
     model = AutoModel.from_pretrained(
-        "Qwen/Qwen3-Reranker-0.6B",
+        "Qwen/Qwen3-Reranker-4B",
         trust_remote_code=True,
         local_files_only=False,
         cache_dir=cache_dir,

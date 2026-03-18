@@ -443,9 +443,63 @@ exit /b %EXIT_CODE%
 "@
 
     $runPsScript = @'
+param(
+    [ValidateSet("run", "service-install", "service-start", "service-install-start", "service-stop", "service-restart", "service-status", "service-uninstall")]
+    [string]$Command = "run"
+)
+
 $ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptPath
 $env:KB_PROJECT_ROOT = $ScriptPath
+
+if ($Command -ne "run") {
+    $isWindows = ($env:OS -eq "Windows_NT")
+    $serviceMap = @{
+        "service-install" = "install"
+        "service-start" = "start"
+        "service-stop" = "stop"
+        "service-restart" = "restart"
+        "service-status" = "status"
+        "service-uninstall" = "uninstall"
+    }
+
+    if ($isWindows) {
+        $manager = Join-Path $ScriptPath "manage_service.ps1"
+        if (-not (Test-Path $manager)) {
+            throw "manage_service.ps1 not found in $ScriptPath"
+        }
+
+        if ($Command -eq "service-install-start") {
+            & $manager -Command install
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $manager -Command start
+            exit $LASTEXITCODE
+        }
+
+        & $manager -Command $serviceMap[$Command]
+        exit $LASTEXITCODE
+    }
+
+    $managerSh = Join-Path $ScriptPath "manage_service.sh"
+    if (-not (Test-Path $managerSh)) {
+        throw "manage_service.sh not found in $ScriptPath"
+    }
+
+    $bashCmd = Get-Command "bash" -ErrorAction SilentlyContinue
+    if (-not $bashCmd) {
+        throw "bash command not found. Please run manage_service.sh manually on Linux."
+    }
+
+    if ($Command -eq "service-install-start") {
+        & $bashCmd.Source $managerSh install
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & $bashCmd.Source $managerSh start
+        exit $LASTEXITCODE
+    }
+
+    & $bashCmd.Source $managerSh $serviceMap[$Command]
+    exit $LASTEXITCODE
+}
 
 if (Test-Path ".venv\Scripts\Activate.ps1") {
     & ".\.venv\Scripts\Activate.ps1"
@@ -469,6 +523,37 @@ if (Test-Path $localCmd) {
 setlocal
 cd /d "%~dp0"
 set "KB_PROJECT_ROOT=%~dp0"
+
+if /i "%~1"=="service-install" (
+    call ".\manage_service.bat" install
+    exit /b %errorlevel%
+)
+if /i "%~1"=="service-start" (
+    call ".\manage_service.bat" start
+    exit /b %errorlevel%
+)
+if /i "%~1"=="service-install-start" (
+    call ".\manage_service.bat" install
+    if errorlevel 1 exit /b %errorlevel%
+    call ".\manage_service.bat" start
+    exit /b %errorlevel%
+)
+if /i "%~1"=="service-stop" (
+    call ".\manage_service.bat" stop
+    exit /b %errorlevel%
+)
+if /i "%~1"=="service-restart" (
+    call ".\manage_service.bat" restart
+    exit /b %errorlevel%
+)
+if /i "%~1"=="service-status" (
+    call ".\manage_service.bat" status
+    exit /b %errorlevel%
+)
+if /i "%~1"=="service-uninstall" (
+    call ".\manage_service.bat" uninstall
+    exit /b %errorlevel%
+)
 
 if exist ".venv\Scripts\activate.bat" (
     call ".venv\Scripts\activate.bat"
@@ -718,6 +803,44 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 export KB_PROJECT_ROOT="$SCRIPT_DIR"
 
+COMMAND="${1:-run}"
+if [[ "$COMMAND" != "run" ]]; then
+    if [[ ! -f "$SCRIPT_DIR/manage_service.sh" ]]; then
+        echo "[x] manage_service.sh not found in $SCRIPT_DIR" >&2
+        exit 1
+    fi
+
+    case "$COMMAND" in
+        service-install)
+            bash "$SCRIPT_DIR/manage_service.sh" install
+            ;;
+        service-start)
+            bash "$SCRIPT_DIR/manage_service.sh" start
+            ;;
+        service-install-start)
+            bash "$SCRIPT_DIR/manage_service.sh" install
+            bash "$SCRIPT_DIR/manage_service.sh" start
+            ;;
+        service-stop)
+            bash "$SCRIPT_DIR/manage_service.sh" stop
+            ;;
+        service-restart)
+            bash "$SCRIPT_DIR/manage_service.sh" restart
+            ;;
+        service-status)
+            bash "$SCRIPT_DIR/manage_service.sh" status
+            ;;
+        service-uninstall)
+            bash "$SCRIPT_DIR/manage_service.sh" uninstall
+            ;;
+        *)
+            echo "[x] Unknown command: $COMMAND" >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+fi
+
 if [[ -f ".venv/bin/activate" ]]; then
     # shellcheck disable=SC1091
     source .venv/bin/activate
@@ -766,6 +889,7 @@ function Stage-DeploymentBundle {
         "README.md",
         "manage_service.ps1",
         "manage_service.bat",
+        "manage_service.sh",
         "uninstall.ps1",
         "uninstall.bat"
     )

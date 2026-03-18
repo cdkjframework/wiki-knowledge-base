@@ -217,7 +217,7 @@ class KnowledgeBase:
         retrieval_cfg = (
             kb_cfg.get("retrieval", {}) if isinstance(kb_cfg.get("retrieval"), dict) else {}
         )
-        project_root = Path(__file__).resolve().parent.parent
+        project_root = self._resolve_project_root()
 
         cfg_persist_dir = storage_cfg.get("persist_dir", kb_cfg.get("persist_dir", "./kb_store"))
         cfg_model_cache_dir = storage_cfg.get("model_cache_dir", kb_cfg.get("model_cache_dir"))
@@ -597,6 +597,55 @@ class KnowledgeBase:
             return json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    @staticmethod
+    def _resolve_project_root() -> Path:
+        env_root = str(os.getenv("KB_PROJECT_ROOT") or "").strip()
+        if env_root:
+            project_root = Path(env_root).expanduser().resolve()
+            if project_root.exists():
+                return project_root
+
+        cwd = Path.cwd().resolve()
+        cwd_cfg = cwd / "config.json"
+        if cwd_cfg.exists():
+            try:
+                cfg = json.loads(cwd_cfg.read_text(encoding="utf-8"))
+                if isinstance(cfg, dict):
+                    raw = str(cfg.get("KB_PROJECT_ROOT") or cfg.get("B_PROJECT_ROOT") or "").strip()
+                    if raw:
+                        root = Path(raw)
+                        if not root.is_absolute():
+                            root = (cwd_cfg.parent / root).resolve()
+                        else:
+                            root = root.expanduser().resolve()
+                        if root.exists():
+                            return root
+            except Exception:
+                pass
+
+        if (cwd / "config.json").exists():
+            return cwd
+
+        pkg_root = Path(__file__).resolve().parent.parent
+        pkg_cfg = pkg_root / "config.json"
+        if pkg_cfg.exists():
+            try:
+                cfg = json.loads(pkg_cfg.read_text(encoding="utf-8"))
+                if isinstance(cfg, dict):
+                    raw = str(cfg.get("KB_PROJECT_ROOT") or cfg.get("B_PROJECT_ROOT") or "").strip()
+                    if raw:
+                        root = Path(raw)
+                        if not root.is_absolute():
+                            root = (pkg_cfg.parent / root).resolve()
+                        else:
+                            root = root.expanduser().resolve()
+                        if root.exists():
+                            return root
+            except Exception:
+                pass
+
+        return pkg_root
 
     @staticmethod
     def _normalize_rows(vectors: np.ndarray) -> np.ndarray:

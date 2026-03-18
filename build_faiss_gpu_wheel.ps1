@@ -9,6 +9,7 @@ param(
     [string]$PackageName = "faiss-gpu",
     [string]$PythonExe = "",
     [switch]$AutoInstallCMake = $false,
+    [switch]$AutoInstallMsvc = $false,
     [switch]$Clean = $false
 )
 
@@ -78,12 +79,19 @@ function Ensure-CMake {
     Write-Info "cmake not found, trying to install via winget..."
     & winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements --silent
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install CMake via winget. Please install CMake manually and retry."
+        Write-Warning-Custom "winget install returned non-zero exit code ($LASTEXITCODE). Will still check whether CMake is available."
     }
 
-    $cmakeBin = "C:\Program Files\CMake\bin"
-    if ((Test-Path $cmakeBin) -and (-not ($env:Path -split ';' | Where-Object { $_ -eq $cmakeBin }))) {
-        $env:Path += ";$cmakeBin"
+    $candidateBins = @(
+        "C:\Program Files\CMake\bin",
+        "C:\Program Files (x86)\CMake\bin",
+        (Join-Path $env:LOCALAPPDATA "Programs\CMake\bin")
+    )
+
+    foreach ($cmakeBin in $candidateBins) {
+        if ((Test-Path $cmakeBin) -and (-not ($env:Path -split ';' | Where-Object { $_ -eq $cmakeBin }))) {
+            $env:Path += ";$cmakeBin"
+        }
     }
 
     $cmakeCmd = Get-Command "cmake" -ErrorAction SilentlyContinue
@@ -94,6 +102,86 @@ function Ensure-CMake {
     Write-Success "CMake is available: $($cmakeCmd.Source)"
 }
 
+function Import-MsvcBuildEnvironment {
+    $vswherePath = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswherePath)) {
+        return $false
+    }
+
+    $installPath = & $vswherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installPath)) {
+        return $false
+    }
+
+    $installPath = $installPath.Trim()
+    $devCmd = Join-Path $installPath "Common7\Tools\VsDevCmd.bat"
+    $vcVars = Join-Path $installPath "VC\Auxiliary\Build\vcvars64.bat"
+
+    if (Test-Path $devCmd) {
+        $initCommand = '"' + $devCmd + '" -no_logo -arch=x64 -host_arch=x64'
+    } elseif (Test-Path $vcVars) {
+        $initCommand = '"' + $vcVars + '"'
+    } else {
+        return $false
+    }
+
+    $envDump = & cmd.exe /c "$initCommand && set"
+    if ($LASTEXITCODE -ne 0 -or -not $envDump) {
+        return $false
+    }
+
+    foreach ($line in $envDump) {
+        $idx = $line.IndexOf('=')
+        if ($idx -le 0) {
+            continue
+        }
+
+        $name = $line.Substring(0, $idx)
+        $value = $line.Substring($idx + 1)
+        [System.Environment]::SetEnvironmentVariable($name, $value, 'Process')
+    }
+
+    return $true
+}
+
+function Ensure-MsvcBuildTools {
+    param([switch]$AutoInstall)
+
+    if ((Get-Command "cl" -ErrorAction SilentlyContinue) -and (Get-Command "nmake" -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    Write-Info "MSVC compiler not detected, trying to initialize Visual Studio build environment..."
+    $msvcLoaded = Import-MsvcBuildEnvironment
+    if ($msvcLoaded -and (Get-Command "cl" -ErrorAction SilentlyContinue) -and (Get-Command "nmake" -ErrorAction SilentlyContinue)) {
+        Write-Success "MSVC build environment initialized."
+        return
+    }
+
+    $installHint = "MSVC Build Tools not detected. Install with: winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override `"--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`""
+    if (-not $AutoInstall) {
+        throw $installHint
+    }
+
+    $wingetCmd = Get-Command "winget" -ErrorAction SilentlyContinue
+    if (-not $wingetCmd) {
+        throw "$installHint`nAuto install was requested, but winget is not available."
+    }
+
+    Write-Info "MSVC Build Tools not found, trying to install via winget..."
+    & winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install MSVC Build Tools via winget. $installHint"
+    }
+
+    $msvcLoaded = Import-MsvcBuildEnvironment
+    if (-not $msvcLoaded -or -not (Get-Command "cl" -ErrorAction SilentlyContinue) -or -not (Get-Command "nmake" -ErrorAction SilentlyContinue)) {
+        throw "MSVC Build Tools were installed but are still not available in this shell. Reopen terminal and retry."
+    }
+
+    Write-Success "MSVC Build Tools are available."
+}
+
 function Update-PyprojectPackageName {
     param(
         [string]$PyprojectPath,
@@ -101,12 +189,24 @@ function Update-PyprojectPackageName {
     )
 
     $content = Get-Content -Path $PyprojectPath -Raw
-    $updated = [regex]::Replace($content, '(?m)^name = ".*"\s*$', "name = `"$NewName`"", 1)
-    if ($updated -eq $content) {
-        throw "Failed to update package name in $PyprojectPath"
+    $pattern = '(?m)^(?<pre>\s*name\s*=\s*")[^"]*(?<post>"\s*)$'
+    $match = [regex]::Match($content, $pattern)
+    if (-not $match.Success) {
+        throw "Failed to find package name in $PyprojectPath"
     }
 
-    Set-Content -Path $PyprojectPath -Value $updated -Encoding UTF8
+    $currentName = $match.Value -replace '(?m)^\s*name\s*=\s*"([^"]*)"\s*$', '$1'
+    if ($currentName -eq $NewName) {
+        # Even when unchanged, normalize encoding to UTF-8 without BOM.
+        $updated = $content
+    } else {
+        $replacement = "`${pre}$NewName`${post}"
+        $updated = [regex]::Replace($content, $pattern, $replacement, 1)
+    }
+
+    # Write UTF-8 without BOM; some TOML parsers reject BOM at file start.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($PyprojectPath, $updated, $utf8NoBom)
 }
 
 $ResolvedOutputDir = Resolve-ProjectPath $OutputDir
@@ -127,6 +227,21 @@ Ensure-CMake -AutoInstall:$AutoInstallCMake
 
 if ($GpuSupport -eq "CUDA") {
     if (-not (Get-Command "nvcc" -ErrorAction SilentlyContinue) -and -not $env:CUDA_PATH) {
+        $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+        if (Test-Path $cudaRoot) {
+            $detected = Get-ChildItem -Path $cudaRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+            if ($detected) {
+                $env:CUDA_PATH = $detected.FullName
+                $cudaBin = Join-Path $env:CUDA_PATH "bin"
+                if ((Test-Path $cudaBin) -and (-not ($env:Path -split ';' | Where-Object { $_ -eq $cudaBin }))) {
+                    $env:Path += ";$cudaBin"
+                }
+                Write-Info "Detected CUDA toolkit: $($env:CUDA_PATH)"
+            }
+        }
+    }
+
+    if (-not (Get-Command "nvcc" -ErrorAction SilentlyContinue) -and -not $env:CUDA_PATH) {
         throw "CUDA toolkit not detected. Please install CUDA and ensure nvcc or CUDA_PATH is available."
     }
 } elseif ($GpuSupport -eq "ROCM") {
@@ -135,9 +250,7 @@ if ($GpuSupport -eq "CUDA") {
     }
 }
 
-if (-not (Get-Command "cl" -ErrorAction SilentlyContinue) -and -not $env:VSINSTALLDIR) {
-    Write-Warning-Custom "MSVC compiler was not detected in the current shell. If the build fails, rerun from a Developer PowerShell for Visual Studio or initialize Build Tools first."
-}
+Ensure-MsvcBuildTools -AutoInstall:$AutoInstallMsvc
 
 if ($Clean) {
     Write-Info "Cleaning FAISS wheel output/work directories..."
@@ -172,9 +285,28 @@ $previousOptLevels = $env:FAISS_OPT_LEVELS
 Push-Location $ResolvedWorkDir
 try {
     Write-Info "Updating faiss-wheels repository..."
-    & git fetch --tags origin
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to fetch faiss-wheels refs"
+    $fetchSucceeded = $false
+    $maxFetchAttempts = 3
+    for ($attempt = 1; $attempt -le $maxFetchAttempts; $attempt++) {
+        & git fetch --tags origin
+        if ($LASTEXITCODE -eq 0) {
+            $fetchSucceeded = $true
+            break
+        }
+
+        if ($attempt -lt $maxFetchAttempts) {
+            Write-Warning-Custom "git fetch failed (attempt $attempt/$maxFetchAttempts). Retrying in 3 seconds..."
+            Start-Sleep -Seconds 3
+        }
+    }
+
+    if (-not $fetchSucceeded) {
+        # Fallback to local refs when network is unstable.
+        & git rev-parse --verify $RepoRef
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to fetch faiss-wheels refs"
+        }
+        Write-Warning-Custom "git fetch failed after retries. Continuing with local refs for '$RepoRef'."
     }
 
     & git checkout $RepoRef
@@ -182,7 +314,13 @@ try {
         throw "Failed to checkout faiss-wheels ref: $RepoRef"
     }
 
-    & git submodule update --init --recursive
+    # Force submodules to target commits even if previous builds left local changes.
+    & git submodule sync --recursive
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to sync faiss-wheels submodule URLs"
+    }
+
+    & git submodule update --init --recursive --force
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to update faiss-wheels submodules"
     }

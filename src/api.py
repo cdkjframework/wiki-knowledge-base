@@ -6,10 +6,11 @@ import logging
 import mimetypes
 import os
 import re
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, Iterator, List, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
@@ -35,6 +36,26 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _project_root_from_config(config_path: Path) -> Path | None:
+    if not config_path.exists():
+        return None
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    raw = str(cfg.get("KB_PROJECT_ROOT") or cfg.get("B_PROJECT_ROOT") or "").strip()
+    if not raw:
+        return None
+    root = Path(raw)
+    if not root.is_absolute():
+        root = (config_path.parent / root).resolve()
+    else:
+        root = root.expanduser().resolve()
+    return root if root.exists() else None
+
+
 def _resolve_project_root() -> Path:
     env_root = str(os.getenv("KB_PROJECT_ROOT") or "").strip()
     if env_root:
@@ -43,8 +64,16 @@ def _resolve_project_root() -> Path:
             return p
 
     cwd = Path.cwd().resolve()
+    cfg_root = _project_root_from_config(cwd / "config.json")
+    if cfg_root is not None:
+        return cfg_root
     if (cwd / "config.json").exists():
         return cwd
+
+    pkg_cfg = Path(__file__).resolve().parent.parent / "config.json"
+    cfg_root = _project_root_from_config(pkg_cfg)
+    if cfg_root is not None:
+        return cfg_root
 
     return Path(__file__).resolve().parent.parent
 
@@ -53,6 +82,68 @@ PROJECT_ROOT = _resolve_project_root()
 WEB_DIR = PROJECT_ROOT / "web"
 DOCS_DIR = PROJECT_ROOT / "docs"
 ASSETS_DIR = PROJECT_ROOT / "assets"
+
+DEFAULT_SYSTEM_INTRO = """您的专属知识伙伴：WIKI本地知识系统
+
+您好！当您询问“你是谁？”时，这是在了解本系统的核心身份。请参考以下全面介绍：
+
+第一部分：关于“WIKI本地知识”是谁（系统定位）
+
+直接回答“你是谁？”：我是WIKI本地知识，您的本地私有化知识库与智能助理。
+
+核心定位：我本质上是为您服务的“第二大脑”和“专属知识引擎”。我的一切能力都基于您提供的知识，并在您的完全掌控下运行。
+
+关键特性：我部署在您的本地环境中，确保所有数据的私有性与安全，不依赖外部网络。
+
+第二部分：关于您与我的关系（“我是谁？”的答案）
+
+直接回答“我是谁？”：您是我的唯一管理者、使用者与共建者。我们之间是紧密协作的伙伴关系。
+
+您的角色：
+
+个人用户：可管理笔记、学习资料与灵感。
+
+团队/组织：可沉淀项目文档、内部规范与协作经验。
+
+系统所有者：完全定义我的知识边界与运行规则。
+
+合作模式：您赋予我知识，我依据这些知识为您提供专属服务。
+
+第三部分：关于我能为您做什么（核心功能与服务）
+
+直接回答“你能干什么？”：我能将您的静态信息转化为动态可用的知识资产，并基于此提供智能服务。具体包括：
+
+1. 智能问答
+
+功能描述：您可直接用自然语言（例如“我们产品的优势？”）向我提问，我将基于您的知识库给出答案。
+
+应用场景：快速获取已沉淀知识中的具体信息。
+
+2. 精准检索
+
+功能描述：快速从您的海量本地资料中，定位到最相关的信息片段，而非仅仅文件列表。
+
+应用场景：高效查找分散在不同文档中的关键内容。
+
+3. 知识管理
+
+功能描述：帮助您将零散信息整合、关联，形成结构化的知识网络。
+
+应用场景：构建并维护个人或团队的知识体系。
+
+4. 持续学习与更新
+
+功能描述：您可以随时向我“传授”新知识或修正旧信息，让我与您同步进化。
+
+应用场景：保持知识库的时效性与准确性。
+
+5. 安全私密协作
+
+功能描述：所有数据存储在您指定的本地，保障绝对安全，并支持安全的内部知识共享。
+
+应用场景：在保护核心数据隐私的前提下进行团队知识协作。
+
+总而言之，我是一位能理解您的问题、运用您的知识、并7x24小时待命的专属知识顾问。您现在就可以向我提问，或开始为我注入知识，让我们共同成长。""".strip()
 
 
 class KnowledgeBaseApi:
@@ -63,6 +154,7 @@ class KnowledgeBaseApi:
         self._session_store: SessionIdStore = self._init_session_store()
         self._model_config_manager: ModelConfigManager | None = self._init_model_config_manager()
         config = self._load_project_config()
+        self._ensure_default_system_intro(config)
         self._search_cfg = config.get("search", {})
         if not isinstance(self._search_cfg, dict):
             self._search_cfg = {}
@@ -131,6 +223,36 @@ class KnowledgeBaseApi:
         except Exception:
             return None
         return value if value > 0 else None
+
+    def _normalize_max_tokens_for_provider(
+        self,
+        provider: str | None,
+        max_tokens: int | None,
+        model: str | None = None,
+    ) -> int | None:
+        if max_tokens is None:
+            return None
+        try:
+            value = int(max_tokens)
+        except Exception:
+            return None
+        if value <= 0:
+            return None
+
+        provider_name = str(provider or "").strip().lower()
+        model_name = str(model or "").strip().lower()
+        if "deepseek" in provider_name or "deepseek" in model_name:
+            deepseek_limit = 8192
+            if value > deepseek_limit:
+                logger.warning(
+                    "max_tokens 超过 DeepSeek 限制，自动下调: original=%s adjusted=%s provider=%s model=%s",
+                    value,
+                    deepseek_limit,
+                    provider_name or "-",
+                    model_name or "-",
+                )
+                return deepseek_limit
+        return value
 
     def _min_source_similarity(self) -> float:
         raw = self._search_cfg.get("min_source_similarity", 0.0)
@@ -439,6 +561,57 @@ class KnowledgeBaseApi:
             return {}
 
     @staticmethod
+    def _persist_chat_system_intro(config: Dict[str, Any], system_intro: str) -> None:
+        if not isinstance(config, dict):
+            return
+
+        kb_cfg = config.get("knowledge_base")
+        if not isinstance(kb_cfg, dict):
+            kb_cfg = {}
+            config["knowledge_base"] = kb_cfg
+
+        chat_cfg = kb_cfg.get("chat")
+        if not isinstance(chat_cfg, dict):
+            chat_cfg = {}
+            kb_cfg["chat"] = chat_cfg
+
+        target = str(system_intro or "").strip()
+        if not target:
+            return
+        if str(chat_cfg.get("system_intro") or "").strip() == target:
+            return
+
+        chat_cfg["system_intro"] = target
+        cfg_path = PROJECT_ROOT / "config.json"
+        try:
+            cfg_path.write_text(
+                json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            logger.info("Initialized config: knowledge_base.chat.system_intro")
+        except Exception as exc:
+            logger.warning("Failed to persist knowledge_base.chat.system_intro: %s", exc)
+
+    def _ensure_default_system_intro(self, config: Dict[str, Any]) -> None:
+        if not isinstance(config, dict):
+            return
+        kb_cfg = config.get("knowledge_base")
+        if not isinstance(kb_cfg, dict):
+            kb_cfg = {}
+            config["knowledge_base"] = kb_cfg
+
+        chat_cfg = kb_cfg.get("chat")
+        if not isinstance(chat_cfg, dict):
+            chat_cfg = {}
+            kb_cfg["chat"] = chat_cfg
+
+        existing = str(chat_cfg.get("system_intro") or "").strip()
+        if existing:
+            return
+
+        self._persist_chat_system_intro(config, DEFAULT_SYSTEM_INTRO)
+
+    @staticmethod
     def _persist_auto_create_database_flag(config: Dict[str, Any], enabled: bool) -> None:
         if not isinstance(config, dict):
             return
@@ -659,20 +832,29 @@ class KnowledgeBaseApi:
         return str(model_type).strip().lower()
 
     def _apply_deep_thinking_strategy(
-        self, system_prompt: str, deep_think: bool = True
+        self,
+        system_prompt: str,
+        deep_think: bool = True,
+        model_type_override: str | None = None,
     ) -> str:
         """根据 model_type 应用不同的深度思考策略"""
         if not deep_think:
             return system_prompt
         
-        model_type = self._get_model_type()
+        model_type = str(model_type_override or self._get_model_type()).strip().lower()
+        logger.info(
+            "[THINK_STRATEGY] override=%s resolved_model_type=%s deep_think=%s",
+            model_type_override,
+            model_type,
+            deep_think,
+        )
         
-        if model_type == "gpt":
+        if ("gpt" in model_type) or (model_type in {"openai", "chatgpt"}):
             # GPT 模型：在系统提示词前添加推理级别
             system_prompt = "Reasoning: high\n" + system_prompt
             logger.info("应用 GPT 深度思考策略：添加 Reasoning: high")
         
-        elif model_type == "qwen":
+        elif ("qwen" in model_type) or (model_type in {"dashscope"}):
             # Qwen 模型：在系统提示词中添加思考引导
             # 由于使用 LM Studio，无法直接设置 enable_thinking 参数
             # 通过在系统提示词中明确要求输出思考过程
@@ -686,7 +868,7 @@ class KnowledgeBaseApi:
             system_prompt += qwen_think_prompt
             logger.info("应用 Qwen 深度思考策略：添加 <think> 标签引导")
         
-        elif model_type == "deepseek":
+        elif "deepseek" in model_type:
             # DeepSeek 模型：添加明确的逐步推理要求
             deepseek_think_prompt = (
                 "\n\n请进行深度逐步推理：\n"
@@ -739,6 +921,42 @@ class KnowledgeBaseApi:
         use_default_model_config: bool = False,
     ) -> tuple[Any | None, str]:
         """Resolve runtime chat client/model strictly from database model configs."""
+        def _log_selected_model(cfg: Dict[str, Any], source: str, requested_model: str | None, effective_model: str) -> None:
+            # Never output api_key or extra_headers values to avoid leaking secrets.
+            extra_params = cfg.get("extra_params")
+            if not isinstance(extra_params, dict):
+                extra_params = {}
+            snapshot = {
+                "id": cfg.get("id"),
+                "name": cfg.get("name"),
+                "provider": cfg.get("provider"),
+                "base_url": cfg.get("base_url"),
+                "model_name": cfg.get("model_name"),
+                "model_type": cfg.get("model_type"),
+                "temperature": cfg.get("temperature"),
+                "max_tokens": cfg.get("max_tokens"),
+                "timeout": cfg.get("timeout"),
+                "is_active": cfg.get("is_active"),
+                "is_default": cfg.get("is_default"),
+                "extra_params_keys": sorted(list(extra_params.keys())),
+            }
+            logger.info(
+                "调用分析模型配置: source=%s requested_model=%s effective_model=%s db_config=%s",
+                source,
+                requested_model,
+                effective_model,
+                snapshot,
+            )
+            logger.info(
+                "[MODEL_CONFIG] source=%s requested_model=%s effective_model=%s provider=%s base_url=%s timeout=%s",
+                source,
+                requested_model,
+                effective_model,
+                snapshot.get("provider"),
+                snapshot.get("base_url"),
+                snapshot.get("timeout"),
+            )
+
         if not self._model_config_manager:
             raise RuntimeError(
                 "模型调用仅支持数据库模型配置。当前未启用模型配置管理，请先配置数据库并创建模型配置。"
@@ -749,14 +967,18 @@ class KnowledgeBaseApi:
             if not cfg:
                 raise ValueError(f"model_config_id not found: {model_config_id}")
             client = self._model_config_manager.get_client(config_id=int(model_config_id))
-            return client, str(llm_model or cfg.get("model_name") or "").strip()
+            model = str(llm_model or cfg.get("model_name") or "").strip()
+            _log_selected_model(cfg, source=f"id:{int(model_config_id)}", requested_model=llm_model, effective_model=model)
+            return client, model
 
         if model_config_name:
             cfg = self._model_config_manager.store.get_config_by_name(str(model_config_name).strip())
             if not cfg:
                 raise ValueError(f"model_config_name not found: {model_config_name}")
             client = self._model_config_manager.get_client(name=str(model_config_name).strip())
-            return client, str(llm_model or cfg.get("model_name") or "").strip()
+            model = str(llm_model or cfg.get("model_name") or "").strip()
+            _log_selected_model(cfg, source=f"name:{str(model_config_name).strip()}", requested_model=llm_model, effective_model=model)
+            return client, model
 
         cfg = self._model_config_manager.store.get_default_config()
         if not cfg:
@@ -764,7 +986,12 @@ class KnowledgeBaseApi:
                 "未配置默认模型。请在模型管理中创建并设置默认模型，或在请求中传 model_config_id/model_config_name。"
             )
         client = self._model_config_manager.get_client(use_default=True)
-        return client, str(llm_model or cfg.get("model_name") or "").strip()
+        model = str(llm_model or cfg.get("model_name") or "").strip()
+        source = "default"
+        if use_default_model_config:
+            source = "default(requested)"
+        _log_selected_model(cfg, source=source, requested_model=llm_model, effective_model=model)
+        return client, model
 
     @staticmethod
     def _build_context(results: Sequence[Dict[str, Any]], max_chars: int = 5000) -> str:
@@ -786,14 +1013,22 @@ class KnowledgeBaseApi:
         return "\n\n".join(blocks).strip()
 
     def _base_system_prompt(self, with_context: bool) -> str:
+        base_intro = str(self._chat_cfg.get("system_intro") or "").strip() or DEFAULT_SYSTEM_INTRO
         if with_context:
             return (
-                "你是知识库问答助手。所有输出都必须使用简体中文。"
+                base_intro
+                + "\n\n"
+                + "你是知识库问答助手。所有输出都必须使用简体中文。"
                 "只能依据提供的知识库上下文回答问题。"
                 "如果证据不足，请明确回答：根据当前知识库无法确定。"
                 "不要编造，不要脱离上下文扩展。"
             )
-        return "你是知识库问答助手，所有输出必须使用简体中文。若知识库没有足够依据，请明确回答：根据当前知识库无法确定。"
+        return (
+            base_intro
+            + "\n\n"
+            + "你是知识库问答助手，所有输出必须使用简体中文。"
+            + "若知识库没有足够依据，请明确回答：根据当前知识库无法确定。"
+        )
 
     def _build_chat_prompts(
         self, question: str, results: Sequence[Dict[str, Any]]
@@ -841,17 +1076,53 @@ class KnowledgeBaseApi:
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
                 logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
-        
+
+        logger.info("[TRACE_NON_STREAM] before_resolve_runtime_model_config")
         runtime_client, model = self._resolve_runtime_model_config(
             llm_model=llm_model,
             model_config_id=model_config_id,
             model_config_name=model_config_name,
             use_default_model_config=use_default_model_config,
         )
+        logger.info("[TRACE_NON_STREAM] after_resolve_runtime_model_config")
+        logger.info(
+            "模型调用信息(非流式): provider=%s base_url=%s timeout=%s model=%s",
+            getattr(runtime_client, "provider", "unknown") if runtime_client is not None else "knowledge_base",
+            getattr(runtime_client, "base_url", "-") if runtime_client is not None else "-",
+            getattr(runtime_client, "timeout", "-") if runtime_client is not None else "-",
+            model,
+        )
+        logger.info(
+            "[MODEL_CALL_NON_STREAM] provider=%s base_url=%s timeout=%s model=%s",
+            getattr(runtime_client, "provider", "unknown") if runtime_client is not None else "knowledge_base",
+            getattr(runtime_client, "base_url", "-") if runtime_client is not None else "-",
+            getattr(runtime_client, "timeout", "-") if runtime_client is not None else "-",
+            model,
+        )
+        effective_max_tokens = self._normalize_max_tokens_for_provider(
+            provider=(getattr(runtime_client, "provider", None) if runtime_client is not None else None),
+            max_tokens=max_tokens,
+            model=model,
+        )
+        if effective_max_tokens != max_tokens:
+            logger.info(
+                "调用参数调整(非流式): max_tokens %s -> %s",
+                max_tokens,
+                effective_max_tokens,
+            )
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
         
-        # 根据 model_type 应用深度思考策略
-        system_prompt = self._apply_deep_thinking_strategy(system_prompt, deep_think)
+        # 根据运行时 provider 应用深度思考策略，避免数据库切换模型后仍使用静态配置策略。
+        runtime_model_type = (
+            str(getattr(runtime_client, "provider", "") or "").strip().lower()
+            if runtime_client is not None
+            else None
+        )
+        system_prompt = self._apply_deep_thinking_strategy(
+            system_prompt,
+            deep_think,
+            model_type_override=runtime_model_type,
+        )
         
         if user_prompt == "未检索到相关知识库内容。":
             logger.warning("检索到的知识库内容为空")
@@ -875,14 +1146,14 @@ class KnowledgeBaseApi:
                 messages=messages,
                 model=model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
             )
         else:
             answer = self.kb.chat_once(
                 messages=messages,
                 model=model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
             )
         
         # 输出参数日志
@@ -939,10 +1210,44 @@ class KnowledgeBaseApi:
             model_config_name=model_config_name,
             use_default_model_config=use_default_model_config,
         )
+        logger.info(
+            "模型调用信息(流式): provider=%s base_url=%s timeout=%s model=%s",
+            getattr(runtime_client, "provider", "unknown") if runtime_client is not None else "knowledge_base",
+            getattr(runtime_client, "base_url", "-") if runtime_client is not None else "-",
+            getattr(runtime_client, "timeout", "-") if runtime_client is not None else "-",
+            model,
+        )
+        logger.info(
+            "[MODEL_CALL_STREAM] provider=%s base_url=%s timeout=%s model=%s",
+            getattr(runtime_client, "provider", "unknown") if runtime_client is not None else "knowledge_base",
+            getattr(runtime_client, "base_url", "-") if runtime_client is not None else "-",
+            getattr(runtime_client, "timeout", "-") if runtime_client is not None else "-",
+            model,
+        )
+        effective_max_tokens = self._normalize_max_tokens_for_provider(
+            provider=(getattr(runtime_client, "provider", None) if runtime_client is not None else None),
+            max_tokens=max_tokens,
+            model=model,
+        )
+        if effective_max_tokens != max_tokens:
+            logger.info(
+                "调用参数调整(流式): max_tokens %s -> %s",
+                max_tokens,
+                effective_max_tokens,
+            )
         system_prompt, user_prompt = self._build_chat_prompts(question, results)
         
-        # 根据 model_type 应用深度思考策略
-        system_prompt = self._apply_deep_thinking_strategy(system_prompt, deep_think)
+        # 根据运行时 provider 应用深度思考策略，避免数据库切换模型后仍使用静态配置策略。
+        runtime_model_type = (
+            str(getattr(runtime_client, "provider", "") or "").strip().lower()
+            if runtime_client is not None
+            else None
+        )
+        system_prompt = self._apply_deep_thinking_strategy(
+            system_prompt,
+            deep_think,
+            model_type_override=runtime_model_type,
+        )
         
         if user_prompt == "未检索到相关知识库内容。":
             logger.warning("检索到的知识库内容为空")
@@ -962,22 +1267,43 @@ class KnowledgeBaseApi:
             logger.info("    [%d] role=%s, content_length=%d", i, role, len(str(content)))
         
         logger.info("=== _answer_stream_from_lm_studio 开始流式返回 ===")
+        stream_start_ts = time.monotonic()
         if runtime_client is not None:
             stream_result = runtime_client.chat_stream(
                 messages=messages,
                 model=model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
             )
         else:
             stream_result = self.kb.chat_stream(
                 messages=messages,
                 model=model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
             )
+
+        def _instrument_stream(chunks: Sequence[str]) -> Iterator[str]:
+            first_chunk_logged = False
+            total_chunks = 0
+            try:
+                for piece in chunks:
+                    total_chunks += 1
+                    if not first_chunk_logged:
+                        first_chunk_logged = True
+                        logger.info(
+                            "上游模型首包到达: latency_ms=%d",
+                            int((time.monotonic() - stream_start_ts) * 1000),
+                        )
+                    yield piece
+            finally:
+                logger.info(
+                    "上游模型流结束: total_chunks=%d elapsed_ms=%d",
+                    total_chunks,
+                    int((time.monotonic() - stream_start_ts) * 1000),
+                )
         logger.info("流对象已返回，将由 SSE 实时转发到前端")
-        return stream_result, None
+        return _instrument_stream(stream_result), None
 
     @staticmethod
     def _distance_to_similarity(distance: float) -> float:
@@ -1548,6 +1874,7 @@ class HttpApiServer:
                 self._send_json(404, {"error": "Not found"}, page_index=page_index)
 
             def _internal_error(self, exc: Exception, page_index: int = 1) -> None:
+                logger.exception("HTTP internal error: %s", exc)
                 self._send_json(500, {"error": str(exc)}, page_index=page_index)
 
             def _read_body_bytes(self) -> bytes:
@@ -1697,9 +2024,23 @@ class HttpApiServer:
             def _path(self) -> str:
                 return urlparse(self.path).path
 
+            @staticmethod
+            def _http_access_log_enabled() -> bool:
+                raw = str(os.getenv("KB_HTTP_ACCESS_LOG", "")).strip().lower()
+                return raw in {"1", "true", "yes", "on"}
+
             def log_message(self, fmt: str, *args):  # noqa: D401
-                # Keep stdout clean for service mode.
-                return
+                # Keep default behavior quiet, but allow opt-in access logs.
+                if not self._http_access_log_enabled():
+                    return
+                try:
+                    message = (fmt % args) if args else fmt
+                except Exception:
+                    message = fmt
+                client_ip = "-"
+                if getattr(self, "client_address", None):
+                    client_ip = str(self.client_address[0])
+                logger.info("HTTP access: client=%s %s", client_ip, message)
 
             def do_GET(self):  # noqa: N802
                 try:
@@ -1774,6 +2115,13 @@ class HttpApiServer:
                         query = ""
                         if "query" in params and params["query"]:
                             query = params["query"][-1].strip()
+                        logger.info(
+                            "HTTP /query GET: stream=%s query_len=%d user_id=%s session_id=%s",
+                            stream_mode,
+                            len(query),
+                            bool(user_id),
+                            bool(session_id),
+                        )
                         if not query:
                             self._bad_request("query is required")
                             return
@@ -2218,6 +2566,15 @@ class HttpApiServer:
                         else:
                             max_tokens = int(max_tokens_raw)
                         stream_mode = bool(body.get("stream", False))
+                        logger.info(
+                            "HTTP /query POST: stream=%s query_len=%d user_id=%s session_id=%s generate_answer=%s deep_think=%s",
+                            stream_mode,
+                            len(query),
+                            bool(user_id),
+                            bool(session_id),
+                            generate_answer,
+                            deep_think,
+                        )
                         if stream_mode:
                             self._send_sse_headers()
                             data = api.query_stream(

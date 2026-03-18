@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import logging
 import os
@@ -146,6 +147,11 @@ def _parse_args() -> argparse.Namespace:
 def _main() -> None:
     logs_dir = setup_logging()
     logger.info("日志目录: %s", logs_dir)
+    try:
+        api_module = inspect.getmodule(KnowledgeBaseApi)
+        logger.info("API module loaded from: %s", getattr(api_module, "__file__", "unknown"))
+    except Exception:
+        logger.info("API module loaded from: unknown")
     args = _parse_args()
     logger.info(
         "Startup args: host=%s port=%s preload_embedding=%s preload_reranker=%s",

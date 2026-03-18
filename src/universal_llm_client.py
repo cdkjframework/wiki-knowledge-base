@@ -3,11 +3,16 @@ Universal LLM Client for multiple AI model providers
 Supports: OpenAI, DeepSeek, Qwen (通义千问), Doubao (豆包), GPT, xAI, Gemini, Kimi, and more
 """
 import json
+import logging
 from typing import Any, Dict, Iterator, List, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import numpy as np
+import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class UniversalLLMError(RuntimeError):
@@ -35,12 +40,12 @@ class UniversalLLMClient:
     Provider Configuration Examples:
     
     1. OpenAI:
-       base_url="https://api.openai.com/v1"
+       base_url="https://api.openai.com"
        api_key="sk-..."
        model="gpt-4"
     
     2. DeepSeek:
-       base_url="https://api.deepseek.com/v1"
+       base_url="https://api.deepseek.com"
        api_key="sk-..."
        model="deepseek-chat"
     
@@ -60,7 +65,7 @@ class UniversalLLMClient:
        model="grok-beta"
     
     6. Gemini:
-       base_url="https://generativelanguage.googleapis.com/v1beta"
+       base_url="https://generativelanguage.googleapis.combeta"
        api_key="..."
        model="gemini-pro"
     
@@ -77,13 +82,13 @@ class UniversalLLMClient:
     
     # Provider-specific API endpoints
     PROVIDER_ENDPOINTS = {
-        "openai": "https://api.openai.com/v1",
-        "deepseek": "https://api.deepseek.com/v1",
+        "openai": "https://api.openai.com",
+        "deepseek": "https://api.deepseek.com",
         "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "doubao": "https://ark.cn-beijing.volces.com/api/v3",
         "xai": "https://api.x.ai/v1",
-        "gemini": "https://generativelanguage.googleapis.com/v1beta",
+        "gemini": "https://generativelanguage.googleapis.combeta",
         "kimi": "https://api.moonshot.cn/v1",
         "moonshot": "https://api.moonshot.cn/v1",
         "lm_studio": "http://localhost:1234/v1",
@@ -205,6 +210,8 @@ class UniversalLLMClient:
         # Special handling for Gemini API key
         if self.provider == "gemini" and self.api_key:
             url = f"{url}?key={self.api_key}"
+
+        logger.info("LLM request URL: %s", url)
         
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = self._build_headers()
@@ -245,17 +252,31 @@ class UniversalLLMClient:
         # Special handling for Gemini API key
         if self.provider == "gemini" and self.api_key:
             url = f"{url}?key={self.api_key}"
+
+        logger.info("LLM stream request URL: %s", url)
         
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = self._build_headers()
-        req = Request(url, data=data, headers=headers, method="POST")
-        
         try:
-            with urlopen(req, timeout=self.timeout) as resp:
-                for raw_line in resp:
-                    line = raw_line.decode("utf-8", errors="ignore").strip()
+            with requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=self.timeout,
+            ) as resp:
+                if resp.status_code >= 400:
+                    err_body = (resp.text or "").strip()
+                    raise UniversalLLMError(
+                        f"API request failed ({resp.status_code}) for {path}: {err_body or resp.reason}",
+                        status_code=resp.status_code,
+                    )
+
+                seen_stream_line = False
+                for raw_line in resp.iter_lines(decode_unicode=True):
+                    line = str(raw_line or "").strip()
                     if not line or line.startswith(":"):
                         continue
+                    seen_stream_line = True
                     if line.startswith("data:"):
                         payload_text = line[5:].strip()
                     else:
@@ -270,16 +291,15 @@ class UniversalLLMClient:
                         raise UniversalLLMError(
                             f"API returned invalid streaming JSON for {path}: {payload_text[:200]}"
                         ) from exc
-        except HTTPError as exc:
-            try:
-                err_body = exc.read().decode("utf-8", errors="ignore")
-            except Exception:
-                err_body = ""
-            raise UniversalLLMError(
-                f"API request failed ({exc.code}) for {path}: {err_body or exc.reason}",
-                status_code=exc.code,
-            ) from exc
-        except URLError as exc:
+
+                if not seen_stream_line:
+                    text = (resp.text or "").strip()
+                    if text:
+                        try:
+                            yield json.loads(text)
+                        except Exception:
+                            pass
+        except requests.RequestException as exc:
             raise UniversalLLMError(
                 f"API request failed for {path}: {exc}",
                 status_code=None,
@@ -421,7 +441,14 @@ class UniversalLLMClient:
             **extra,
         )
         resp = self._post("/v1/chat/completions", payload)
-        return self._extract_chat_text(resp)
+        if isinstance(resp, dict) and isinstance(resp.get("error"), dict):
+            err = resp.get("error") or {}
+            message = str(err.get("message") or err.get("type") or "unknown provider error")
+            raise UniversalLLMError(f"Chat request failed: {message}")
+        text = self._extract_chat_text(resp)
+        if not text:
+            raise UniversalLLMError("Chat response contains no text content")
+        return text
 
     def chat_stream(
         self,
@@ -452,10 +479,75 @@ class UniversalLLMClient:
             max_tokens=max_tokens,
             **extra,
         )
+        yielded = False
+        chunk_count = 0
+        first_chunk_preview = ""
         for chunk in self._stream_post_json("/v1/chat/completions", payload):
+            chunk_count += 1
+            if chunk_count == 1:
+                try:
+                    if isinstance(chunk, dict):
+                        first_chunk_preview = f"keys={sorted(list(chunk.keys()))}"
+                    else:
+                        first_chunk_preview = f"type={type(chunk).__name__}"
+                except Exception:
+                    first_chunk_preview = "unavailable"
+            if isinstance(chunk, dict) and isinstance(chunk.get("error"), dict):
+                err = chunk.get("error") or {}
+                message = str(err.get("message") or err.get("type") or "unknown provider error")
+                logger.error(
+                    "Upstream stream error chunk: provider=%s model=%s message=%s error=%s",
+                    self.provider,
+                    model,
+                    message,
+                    err,
+                )
+                raise UniversalLLMError(f"Chat stream failed: {message}")
             text = self._extract_stream_text(chunk)
             if text:
+                yielded = True
                 yield text
+        if not yielded:
+            logger.error(
+                "Upstream stream produced no text: provider=%s model=%s chunk_count=%d first_chunk=%s",
+                self.provider,
+                model,
+                chunk_count,
+                first_chunk_preview,
+            )
+            # Fallback: some providers/models may close stream without text chunks.
+            # Try one non-stream request so callers can still receive an answer.
+            try:
+                logger.warning(
+                    "Stream had no text, fallback to chat_once: provider=%s model=%s",
+                    self.provider,
+                    model,
+                )
+                fallback_text = self.chat_once(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **extra,
+                )
+                fallback_text = str(fallback_text or "").strip()
+                if fallback_text:
+                    logger.info(
+                        "Fallback chat_once succeeded: provider=%s model=%s length=%d",
+                        self.provider,
+                        model,
+                        len(fallback_text),
+                    )
+                    yield fallback_text
+                    return
+            except Exception as exc:
+                logger.error(
+                    "Fallback chat_once failed: provider=%s model=%s error=%s",
+                    self.provider,
+                    model,
+                    exc,
+                )
+            raise UniversalLLMError("Chat stream ended without text chunks")
 
     def embed_texts(self, texts: Sequence[str], model: str) -> np.ndarray:
         """

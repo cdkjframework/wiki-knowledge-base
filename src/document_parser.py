@@ -31,6 +31,8 @@ _BINARY_TEXT_RE = re.compile(rb"[ -~]{4,}")
 class DocumentParser:
     """Extract text content from local files and uploaded bytes."""
 
+    _warned_once: set[str] = set()
+
     TEXT_EXTENSIONS = {
         ".txt",
         ".md",
@@ -48,8 +50,10 @@ class DocumentParser:
     def __init__(self, logger: Optional[logging.Logger] = None):
         self._logger = logger or logging.getLogger(__name__)
         self._markitdown = self._init_markitdown()
-        self._marker_pdf_engine = self._init_marker_pdf_engine()
-        self._pix2text_engine = self._init_pix2text_engine()
+        self._marker_pdf_engine = None
+        self._pix2text_engine = None
+        self._marker_pdf_checked = False
+        self._pix2text_checked = False
 
     @staticmethod
     def _preview_text(text: str, limit: int = 400) -> str:
@@ -77,13 +81,20 @@ class DocumentParser:
         except Exception:
             markitdown_cls = None
         if markitdown_cls is None:
-            self._logger.info("MarkItDown 不可用，回退到兼容解析器")
+            self._warn_once("markitdown_missing", "info", "MarkItDown 不可用，回退到兼容解析器")
             return None
         try:
             return markitdown_cls()
         except Exception as exc:
-            self._logger.warning("MarkItDown 初始化失败，回退到兼容解析器: %s", exc)
+            self._warn_once("markitdown_init_failed", "warning", "MarkItDown 初始化失败，回退到兼容解析器: %s", exc)
             return None
+
+    def _warn_once(self, key: str, level: str, message: str, *args: Any) -> None:
+        if key in self._warned_once:
+            return
+        self._warned_once.add(key)
+        log_method = getattr(self._logger, level, self._logger.warning)
+        log_method(message, *args)
 
     def _init_marker_pdf_engine(self):
         try:
@@ -96,20 +107,53 @@ class DocumentParser:
             if callable(create_model_dict):
                 return converter_cls(artifact_dict=create_model_dict())
             return converter_cls()
-        except Exception:
-            self._logger.info("PDF Marker 不可用，回退到当前 PDF 解析器")
+        except Exception as exc:
+            self._warn_once("marker_pdf_unavailable", "warning", "PDF Marker 不可用，回退到当前 PDF 解析器。原因: %s", exc)
             return None
 
     def _init_pix2text_engine(self):
         try:
+            self._patch_optimum_onnxruntime_exports()
             module = importlib.import_module("pix2text")
             cls = getattr(module, "Pix2Text", None)
             if cls is None:
+                self._warn_once("pix2text_missing_class", "warning", "Pix2Text 模块可导入但未找到 Pix2Text 类，回退到当前图片解析器")
                 return None
             return cls()
-        except Exception:
-            self._logger.info("Pix2Text 不可用，回退到当前图片解析器")
+        except Exception as exc:
+            self._warn_once("pix2text_unavailable", "warning", "Pix2Text 不可用，回退到当前图片解析器。原因: %s", exc)
             return None
+
+    def _get_marker_pdf_engine(self):
+        if not self._marker_pdf_checked:
+            self._marker_pdf_checked = True
+            self._marker_pdf_engine = self._init_marker_pdf_engine()
+        return self._marker_pdf_engine
+
+    def _get_pix2text_engine(self):
+        if not self._pix2text_checked:
+            self._pix2text_checked = True
+            self._pix2text_engine = self._init_pix2text_engine()
+        return self._pix2text_engine
+
+    def _patch_optimum_onnxruntime_exports(self) -> None:
+        """Compatibility shim for pix2text expecting legacy optimum exports."""
+        try:
+            ort_mod = importlib.import_module("optimum.onnxruntime")
+            if getattr(ort_mod, "ORTModelForVision2Seq", None) is not None:
+                return
+            modeling_mod = importlib.import_module("optimum.onnxruntime.modeling")
+            cls = getattr(modeling_mod, "ORTModelForVision2Seq", None)
+            if cls is not None:
+                setattr(ort_mod, "ORTModelForVision2Seq", cls)
+                self._warn_once(
+                    "pix2text_optimum_shim",
+                    "info",
+                    "检测到 optimum 新版命名空间结构，已应用 ORTModelForVision2Seq 兼容补丁",
+                )
+        except Exception:
+            # Keep silent here; _init_pix2text_engine will log concrete failure reason.
+            return
 
     @staticmethod
     def _pick_markdown_text(result: object) -> str:
@@ -583,7 +627,7 @@ class DocumentParser:
         return "\n".join(lines)
 
     def _read_pdf_with_marker(self, path: Path) -> str:
-        engine = self._marker_pdf_engine
+        engine = self._get_marker_pdf_engine()
         if engine is None:
             return ""
         try:
@@ -821,7 +865,7 @@ class DocumentParser:
         return "\n".join(rows)
 
     def read_image_table(self, path: Path) -> str:
-        engine = self._pix2text_engine
+        engine = self._get_pix2text_engine()
         if engine is None:
             return ""
         try:

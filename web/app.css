@@ -1695,6 +1695,61 @@ input.size-small {
   animation: dots 1.5s infinite;
 }
 
+.kb-loading-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.22);
+  z-index: 9999;
+}
+
+.kb-loading-overlay.show {
+  display: flex;
+}
+
+.kb-loading-dialog {
+  min-width: 220px;
+  max-width: 340px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 148, 136, 0.35);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kb-loading-spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid rgba(13, 148, 136, 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: kb-spin 0.85s linear infinite;
+}
+
+.kb-loading-text {
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+body.kb-loading-active {
+  cursor: wait;
+}
+
+@keyframes kb-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes dots {
   0%,
   20% {

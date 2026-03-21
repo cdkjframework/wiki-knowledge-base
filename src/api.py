@@ -645,7 +645,7 @@ class KnowledgeBaseApi:
         if backend == "postgres":
             backend = "postgresql"
         if backend not in {"mysql", "postgresql"}:
-            raise ValueError(f"Unsupported history backend: {backend}")
+            raise ValueError(f"不支持的历史存储后端: {backend}")
 
         db_type_key = "mysql" if backend == "mysql" else "postgresql"
         db_type_cfg = db_cfg.get(db_type_key, {})
@@ -715,7 +715,7 @@ class KnowledgeBaseApi:
             logger.info("Session storage backend: memory")
             return InMemorySessionIdStore()
         if backend != "redis":
-            raise ValueError(f"Unsupported session backend: {backend}")
+            raise ValueError(f"不支持的会话存储后端: {backend}")
 
         redis_cfg = session_cfg.get("redis", {})
         if not isinstance(redis_cfg, dict):
@@ -820,7 +820,7 @@ class KnowledgeBaseApi:
 
     def _new_session_id(self, user_id: str | None) -> str:
         if not user_id:
-            raise ValueError("user_id is required")
+            raise ValueError("缺少 user_id 参数")
         return self._session_store.new_session_id(user_id)
 
     def log_event(self, action: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -910,7 +910,7 @@ class KnowledgeBaseApi:
         if kb_chat_model:
             return kb_chat_model
         raise RuntimeError(
-            "No chat model configured. Set KB_CHAT_MODEL or knowledge_base.lm_studio.chat_model."
+            "未配置聊天模型。请设置 KB_CHAT_MODEL 或 knowledge_base.lm_studio.chat_model。"
         )
 
     def _resolve_runtime_model_config(
@@ -965,7 +965,7 @@ class KnowledgeBaseApi:
         if model_config_id is not None:
             cfg = self._model_config_manager.store.get_config(int(model_config_id))
             if not cfg:
-                raise ValueError(f"model_config_id not found: {model_config_id}")
+                raise ValueError(f"未找到 model_config_id 对应配置: {model_config_id}")
             client = self._model_config_manager.get_client(config_id=int(model_config_id))
             model = str(llm_model or cfg.get("model_name") or "").strip()
             _log_selected_model(cfg, source=f"id:{int(model_config_id)}", requested_model=llm_model, effective_model=model)
@@ -974,7 +974,7 @@ class KnowledgeBaseApi:
         if model_config_name:
             cfg = self._model_config_manager.store.get_config_by_name(str(model_config_name).strip())
             if not cfg:
-                raise ValueError(f"model_config_name not found: {model_config_name}")
+                raise ValueError(f"未找到 model_config_name 对应配置: {model_config_name}")
             client = self._model_config_manager.get_client(name=str(model_config_name).strip())
             model = str(llm_model or cfg.get("model_name") or "").strip()
             _log_selected_model(cfg, source=f"name:{str(model_config_name).strip()}", requested_model=llm_model, effective_model=model)
@@ -1712,7 +1712,7 @@ class KnowledgeBaseApi:
         else:
             # 如果是内存存储，需要删除所有属于该session的消息
             # 这里暂不实现，因为主要针对数据库存储
-            raise NotImplementedError("delete_session not supported for this store")
+            raise NotImplementedError("当前存储后端不支持删除整段会话")
 
 
 class API(KnowledgeBaseApi):
@@ -1871,7 +1871,7 @@ class HttpApiServer:
                 self._send_json(400, {"error": message}, page_index=page_index)
 
             def _not_found(self, page_index: int = 1) -> None:
-                self._send_json(404, {"error": "Not found"}, page_index=page_index)
+                self._send_json(404, {"error": "资源不存在"}, page_index=page_index)
 
             def _internal_error(self, exc: Exception, page_index: int = 1) -> None:
                 logger.exception("HTTP internal error: %s", exc)
@@ -1884,7 +1884,7 @@ class HttpApiServer:
                 try:
                     length = int(length_raw)
                 except Exception:
-                    raise ValueError("Invalid Content-Length")
+                    raise ValueError("无效的 Content-Length")
                 return self.rfile.read(max(0, length))
 
             def _read_json(self) -> Dict[str, Any]:
@@ -1894,19 +1894,19 @@ class HttpApiServer:
                 try:
                     obj = json.loads(raw.decode("utf-8"))
                 except Exception as exc:
-                    raise ValueError("Invalid JSON body") from exc
+                    raise ValueError("JSON 请求体格式无效") from exc
                 if not isinstance(obj, dict):
-                    raise ValueError("JSON body must be an object")
+                    raise ValueError("JSON 请求体必须是对象")
                 return obj
 
             def _read_multipart_file(self, field_name: str = "file") -> Dict[str, Any]:
                 content_type = self.headers.get("Content-Type", "")
                 if "multipart/form-data" not in content_type.lower():
-                    raise ValueError("Content-Type must be multipart/form-data")
+                    raise ValueError("Content-Type 必须为 multipart/form-data")
 
                 raw = self._read_body_bytes()
                 if not raw:
-                    raise ValueError("Request body is empty")
+                    raise ValueError("请求体为空")
 
                 header = (
                     f"Content-Type: {content_type}\r\n"
@@ -1914,7 +1914,7 @@ class HttpApiServer:
                 ).encode("utf-8")
                 message = BytesParser(policy=default).parsebytes(header + raw)
                 if not message.is_multipart():
-                    raise ValueError("Invalid multipart body")
+                    raise ValueError("multipart 请求体格式无效")
 
                 form: Dict[str, str] = {}
                 uploaded: Dict[str, Any] | None = None
@@ -1940,7 +1940,7 @@ class HttpApiServer:
                         form[name] = payload.decode("utf-8", errors="replace").strip()
 
                 if uploaded is None:
-                    raise ValueError(f"{field_name} is required")
+                    raise ValueError(f"缺少必填字段: {field_name}")
 
                 uploaded["form"] = form
                 return uploaded
@@ -1948,11 +1948,11 @@ class HttpApiServer:
             def _read_multipart_files(self, field_name: str = "files") -> Dict[str, Any]:
                 content_type = self.headers.get("Content-Type", "")
                 if "multipart/form-data" not in content_type.lower():
-                    raise ValueError("Content-Type must be multipart/form-data")
+                    raise ValueError("Content-Type 必须为 multipart/form-data")
 
                 raw = self._read_body_bytes()
                 if not raw:
-                    raise ValueError("Request body is empty")
+                    raise ValueError("请求体为空")
 
                 header = (
                     f"Content-Type: {content_type}\r\n"
@@ -1960,7 +1960,7 @@ class HttpApiServer:
                 ).encode("utf-8")
                 message = BytesParser(policy=default).parsebytes(header + raw)
                 if not message.is_multipart():
-                    raise ValueError("Invalid multipart body")
+                    raise ValueError("multipart 请求体格式无效")
 
                 form: Dict[str, str] = {}
                 uploads: List[Dict[str, Any]] = []
@@ -1986,7 +1986,7 @@ class HttpApiServer:
                         form[name] = payload.decode("utf-8", errors="replace").strip()
 
                 if not uploads:
-                    raise ValueError(f"{field_name} is required")
+                    raise ValueError(f"缺少必填字段: {field_name}")
 
                 return {"files": uploads, "form": form}
 
@@ -2048,7 +2048,7 @@ class HttpApiServer:
                     if path in {"/", "/ui", "/ui/"}:
                         if self._serve_static(WEB_DIR, "index.html"):
                             return
-                        self._internal_error(FileNotFoundError("Frontend entry not found: web/index.html"))
+                        self._internal_error(FileNotFoundError("未找到前端入口文件: web/index.html"))
                         return
                     if path.startswith("/ui/"):
                         rel = path[len("/ui/") :]
@@ -2065,7 +2065,7 @@ class HttpApiServer:
                     if path in {"/api-docs", "/docs", "/docs/"}:
                         if self._serve_static(DOCS_DIR, "API.html"):
                             return
-                        self._internal_error(FileNotFoundError("API document not found: docs/API.html"))
+                        self._internal_error(FileNotFoundError("未找到 API 文档文件: docs/API.html"))
                         return
                     if path.startswith("/docs/"):
                         rel = path[len("/docs/") :]
@@ -2074,7 +2074,7 @@ class HttpApiServer:
                         self._not_found()
                         return
                     if path == "/health":
-                        self._ok({"ok": True, "message": "alive"})
+                        self._ok({"ok": True, "message": "服务正常"})
                         return
                     if path == "/session":
                         params = self._parse_query_params()
@@ -2085,7 +2085,7 @@ class HttpApiServer:
                         if "userId" in params and params["userId"]:
                             user_id = params["userId"][-1].strip() or user_id
                         if not user_id:
-                            self._bad_request("user_id is required")
+                            self._bad_request("缺少 user_id 参数")
                             return
                         session_id = api._new_session_id(user_id)
                         self._ok(
@@ -2123,19 +2123,19 @@ class HttpApiServer:
                             bool(session_id),
                         )
                         if not query:
-                            self._bad_request("query is required")
+                            self._bad_request("缺少 query 参数")
                             return
                         try:
                             k = int(params.get("k", ["2"])[-1])
                         except Exception:
-                            self._bad_request("k must be int")
+                            self._bad_request("k 必须是整数")
                             return
                         relevance_threshold = None
                         if "relevance_threshold" in params and params["relevance_threshold"]:
                             try:
                                 relevance_threshold = float(params["relevance_threshold"][-1])
                             except Exception:
-                                self._bad_request("relevance_threshold must be float")
+                                self._bad_request("relevance_threshold 必须是数字")
                                 return
                         llm_model = None
                         if "llm_model" in params and params["llm_model"]:
@@ -2146,7 +2146,7 @@ class HttpApiServer:
                             try:
                                 model_config_id = int(params["model_config_id"][-1])
                             except Exception:
-                                self._bad_request("model_config_id must be int")
+                                self._bad_request("model_config_id 必须是整数")
                                 return
                         model_config_name = None
                         if "model_config_name" in params and params["model_config_name"]:
@@ -2159,7 +2159,7 @@ class HttpApiServer:
                             elif raw in {"0", "false", "no", "off"}:
                                 use_default_model_config = False
                             else:
-                                self._bad_request("use_default_model_config must be bool")
+                                self._bad_request("use_default_model_config 必须是布尔值")
                                 return
 
                         generate_answer = True
@@ -2170,7 +2170,7 @@ class HttpApiServer:
                             elif raw in {"0", "false", "no", "off"}:
                                 generate_answer = False
                             else:
-                                self._bad_request("generate_answer must be bool")
+                                self._bad_request("generate_answer 必须是布尔值")
                                 return
 
                         deep_think = True
@@ -2181,7 +2181,7 @@ class HttpApiServer:
                             elif raw in {"0", "false", "no", "off"}:
                                 deep_think = False
                             else:
-                                self._bad_request("deep_think must be bool")
+                                self._bad_request("deep_think 必须是布尔值")
                                 return
 
                         temperature = 0.2
@@ -2189,7 +2189,7 @@ class HttpApiServer:
                             try:
                                 temperature = float(params["temperature"][-1])
                             except Exception:
-                                self._bad_request("temperature must be float")
+                                self._bad_request("temperature 必须是数字")
                                 return
 
                         max_tokens = api._default_chat_max_tokens()
@@ -2197,7 +2197,7 @@ class HttpApiServer:
                             try:
                                 max_tokens = int(params["max_tokens"][-1])
                             except Exception:
-                                self._bad_request("max_tokens must be int")
+                                self._bad_request("max_tokens 必须是整数")
                                 return
 
                         if stream_mode:
@@ -2339,7 +2339,7 @@ class HttpApiServer:
                             try:
                                 page_size = int(page_size_str)
                             except Exception:
-                                self._bad_request("pageSize must be int")
+                                self._bad_request("pageSize 必须是整数")
                                 return
                         
                         filename = self._get_param_value(params, "filename", "").strip() or None
@@ -2365,7 +2365,7 @@ class HttpApiServer:
                             try:
                                 limit = int(params["limit"][-1])
                             except Exception:
-                                self._bad_request("limit must be int")
+                                self._bad_request("limit 必须是整数")
                                 return
                         if "action" in params and params["action"]:
                             action = params["action"][-1]
@@ -2383,7 +2383,7 @@ class HttpApiServer:
                     # Model configuration endpoints
                     if path == "/model/configs":
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         params = self._parse_query_params()
                         provider = self._get_param_value(params, "provider", "").strip() or None
@@ -2402,12 +2402,12 @@ class HttpApiServer:
                     
                     if path.startswith("/model/config/"):
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         # Extract ID or name
                         identifier = unquote(path[len("/model/config/"):]).strip()
                         if not identifier:
-                            self._bad_request("config_id or name is required")
+                            self._bad_request("缺少 config_id 或 name 参数")
                             return
                         # Try to parse as ID first
                         try:
@@ -2421,7 +2421,7 @@ class HttpApiServer:
                     
                     if path == "/model/config/default":
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         result = api._model_config_manager.get_default_config()
                         self._ok(result)
@@ -2429,7 +2429,7 @@ class HttpApiServer:
                     
                     if path == "/model/providers":
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         result = api._model_config_manager.get_supported_providers()
                         self._ok(result)
@@ -2450,7 +2450,7 @@ class HttpApiServer:
                             page_index = self._to_positive_int(form.get("pageIndex", 1), default=1)
                             filename = str(form.get("filename") or uploaded.get("filename") or "").strip()
                             if not filename:
-                                self._bad_request("filename is required")
+                                self._bad_request("缺少 filename 参数")
                                 return
                             encoding = str(form.get("encoding", "")).strip() or None
                             self._ok(
@@ -2468,7 +2468,7 @@ class HttpApiServer:
                         text = body.get("text")
                         if not filename or text is None:
                             self._bad_request(
-                                "Use multipart/form-data with field 'file', or JSON with filename/text"
+                                "请使用 multipart/form-data 并携带 file 字段，或使用 JSON 并提供 filename/text"
                             )
                             return
                         self._ok(api.add_document(filename=filename, text=str(text)), page_index=page_index)
@@ -2476,7 +2476,7 @@ class HttpApiServer:
                     if path == "/kb/files":
                         content_type = self.headers.get("Content-Type", "")
                         if "multipart/form-data" not in content_type.lower():
-                            self._bad_request("Use multipart/form-data with field 'files'")
+                            self._bad_request("请使用 multipart/form-data 并携带 files 字段")
                             return
                         uploaded = self._read_multipart_files("files")
                         form = uploaded.get("form", {})
@@ -2485,7 +2485,7 @@ class HttpApiServer:
                         files = uploaded.get("files", [])
                         for item in files:
                             if not str(item.get("filename") or "").strip():
-                                self._bad_request("filename is required")
+                                self._bad_request("缺少 filename 参数")
                                 return
                         self._ok(
                             api.add_uploaded_files(files=files, encoding=encoding),
@@ -2497,7 +2497,7 @@ class HttpApiServer:
                     if path == "/session":
                         user_id = str(body.get("user_id") or body.get("userId") or "").strip() or None
                         if not user_id:
-                            self._bad_request("user_id is required")
+                            self._bad_request("缺少 user_id 参数")
                             return
                         session_id = api._new_session_id(user_id)
                         self._ok(
@@ -2508,7 +2508,7 @@ class HttpApiServer:
                     if path == "/query":
                         query = str(body.get("query", "")).strip()
                         if not query:
-                            self._bad_request("query is required")
+                            self._bad_request("缺少 query 参数")
                             return
                         user_id = str(body.get("user_id") or body.get("userId") or "").strip() or None
                         session_id = str(body.get("session_id") or body.get("sessionId") or "").strip() or None
@@ -2526,10 +2526,10 @@ class HttpApiServer:
                             elif val in {"0", "false", "no", "off"}:
                                 generate_answer = False
                             else:
-                                self._bad_request("generate_answer must be bool")
+                                self._bad_request("generate_answer 必须是布尔值")
                                 return
                         else:
-                            self._bad_request("generate_answer must be bool")
+                            self._bad_request("generate_answer 必须是布尔值")
                             return
                         deep_think_raw = body.get("deep_think", True)
                         if isinstance(deep_think_raw, bool):
@@ -2543,7 +2543,7 @@ class HttpApiServer:
                             elif val in {"0", "false", "no", "off"}:
                                 deep_think = False
                             else:
-                                self._bad_request("deep_think must be bool")
+                                self._bad_request("deep_think 必须是布尔值")
                                 return
                         else:
                             deep_think = True
@@ -2700,14 +2700,14 @@ class HttpApiServer:
                         filename = str(body.get("filename", "")).strip()
                         text = str(body.get("text", ""))
                         if not filename:
-                            self._bad_request("filename is required")
+                            self._bad_request("缺少 filename 参数")
                             return
                         self._ok(api.add_document(filename=filename, text=text), page_index=page_index)
                         return
                     if path == "/kb/chunks/rebuild":
                         filename = str(body.get("filename", "")).strip()
                         if not filename:
-                            self._bad_request("filename is required")
+                            self._bad_request("缺少 filename 参数")
                             return
                         self._ok(api.rebuild_chunks_for_filename(filename), page_index=page_index)
                         return
@@ -2715,13 +2715,13 @@ class HttpApiServer:
                     # Model configuration POST endpoints
                     if path == "/model/config":
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         # Add new config
                         required_fields = ["name", "provider", "base_url", "model_name"]
                         for field in required_fields:
                             if not body.get(field):
-                                self._bad_request(f"{field} is required")
+                                self._bad_request(f"缺少必填字段: {field}")
                                 return
                         result = api._model_config_manager.add_model_config(
                             name=body["name"],
@@ -2744,7 +2744,7 @@ class HttpApiServer:
                     
                     if path == "/model/config/test":
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         # Test config
                         config_id = body.get("config_id")
@@ -2760,7 +2760,7 @@ class HttpApiServer:
 
                     if path == "/model/config/bootstrap":
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         result = api._model_config_manager.bootstrap_default_configs()
                         self._ok(result, page_index=page_index)
@@ -2768,14 +2768,14 @@ class HttpApiServer:
                     
                     if path.startswith("/model/config/") and path.endswith("/default"):
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         # Set as default
                         config_id_str = path[len("/model/config/"):-len("/default")]
                         try:
                             config_id = int(config_id_str)
                         except ValueError:
-                            self._bad_request("config_id must be int")
+                            self._bad_request("config_id 必须是整数")
                             return
                         result = api._model_config_manager.set_default_config(config_id)
                         self._ok(result, page_index=page_index)
@@ -2793,18 +2793,18 @@ class HttpApiServer:
                     if path.startswith("/kb/chunk/"):
                         chunk_id_raw = unquote(path[len("/kb/chunk/") :]).strip()
                         if not chunk_id_raw:
-                            self._bad_request("chunk_id is required")
+                            self._bad_request("缺少 chunk_id 参数")
                             return
                         try:
                             chunk_id = int(chunk_id_raw)
                         except Exception:
-                            self._bad_request("chunk_id must be int")
+                            self._bad_request("chunk_id 必须是整数")
                             return
                         body = self._read_json()
                         page_index = self._page_index_from_body(body)
                         text = str(body.get("text", ""))
                         if not text.strip():
-                            self._bad_request("text is required")
+                            self._bad_request("缺少 text 参数")
                             return
                         self._ok(api.update_chunk(chunk_id=chunk_id, text=text), page_index=page_index)
                         return
@@ -2812,13 +2812,13 @@ class HttpApiServer:
                     # Model configuration PUT endpoint
                     if path.startswith("/model/config/"):
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         config_id_str = unquote(path[len("/model/config/"):]).strip()
                         try:
                             config_id = int(config_id_str)
                         except ValueError:
-                            self._bad_request("config_id must be int")
+                            self._bad_request("config_id 必须是整数")
                             return
                         body = self._read_json()
                         page_index = self._page_index_from_body(body)
@@ -2855,12 +2855,12 @@ class HttpApiServer:
                     if path.startswith("/history/"):
                         raw_id = unquote(path[len("/history/") :]).strip()
                         if not raw_id:
-                            self._bad_request("history id is required")
+                            self._bad_request("缺少 history id 参数")
                             return
                         try:
                             item_id = int(raw_id)
                         except Exception:
-                            self._bad_request("history id must be int")
+                            self._bad_request("history id 必须是整数")
                             return
                         removed = api.delete_history(item_id)
                         if removed <= 0:
@@ -2871,7 +2871,7 @@ class HttpApiServer:
                     if path.startswith("/session/"):
                         session_id = unquote(path[len("/session/") :]).strip()
                         if not session_id:
-                            self._bad_request("session_id is required")
+                            self._bad_request("缺少 session_id 参数")
                             return
                         try:
                             removed = api.delete_session(session_id)
@@ -2880,24 +2880,24 @@ class HttpApiServer:
                                 return
                             self._ok({"ok": True, "removed": removed})
                         except NotImplementedError:
-                            self._bad_request("delete_session not supported")
+                            self._bad_request("当前后端不支持删除整段会话")
                         return
                     if path.startswith("/kb/document/"):
                         filename = unquote(path[len("/kb/document/") :]).strip()
                         if not filename:
-                            self._bad_request("filename is required")
+                            self._bad_request("缺少 filename 参数")
                             return
                         self._ok(api.remove_document(filename))
                         return
                     if path.startswith("/kb/chunk/"):
                         chunk_id_raw = unquote(path[len("/kb/chunk/") :]).strip()
                         if not chunk_id_raw:
-                            self._bad_request("chunk_id is required")
+                            self._bad_request("缺少 chunk_id 参数")
                             return
                         try:
                             chunk_id = int(chunk_id_raw)
                         except Exception:
-                            self._bad_request("chunk_id must be int")
+                            self._bad_request("chunk_id 必须是整数")
                             return
                         self._ok(api.delete_chunk(chunk_id))
                         return
@@ -2905,13 +2905,13 @@ class HttpApiServer:
                     # Model configuration DELETE endpoint
                     if path.startswith("/model/config/"):
                         if not api._model_config_manager:
-                            self._bad_request("Model configuration management not available (requires database backend)")
+                            self._bad_request("模型配置管理不可用（需要启用数据库后端）")
                             return
                         config_id_str = unquote(path[len("/model/config/"):]).strip()
                         try:
                             config_id = int(config_id_str)
                         except ValueError:
-                            self._bad_request("config_id must be int")
+                            self._bad_request("config_id 必须是整数")
                             return
                         result = api._model_config_manager.delete_model_config(config_id)
                         if not result.get("ok"):

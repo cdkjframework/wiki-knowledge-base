@@ -35,7 +35,7 @@ const chunkManagerState = {
 function openSourceDialog(item, index = 0) {
   if (!sourceDialog || !sourceDialogTitle || !sourceDialogContent) return;
 
-  const filename = String(item?.filename || 'unknown');
+  const filename = String(item?.filename || '未知文件');
   const sim = item?.similarity != null ? Number(item.similarity) : null;
   const scoreLabel = sim == null || Number.isNaN(sim) ? '' : ` | 相似度 ${(sim * 100).toFixed(1)}%`;
   const fullText = String(item?.text || item?.chunk || item?.content || item?.preview_text || '').trim() || '（无内容）';
@@ -93,7 +93,7 @@ function renderKnowledgeSources(results = [], statusText = '') {
 
     const name = document.createElement('div');
     name.className = 'source-name';
-    name.textContent = `${idx + 1}. ${String(item.filename || 'unknown')}`;
+    name.textContent = `${idx + 1}. ${String(item.filename || '未知文件')}`;
 
     const score = document.createElement('div');
     score.className = 'source-score';
@@ -136,6 +136,56 @@ function showToast(message, ok = true) {
   showToast._timer = window.setTimeout(() => {
     toast.className = 'toast';
   }, 3200);
+}
+
+let kbLoadingCount = 0;
+
+function ensureKbLoadingOverlay() {
+  let overlay = document.getElementById('kb-loading-overlay');
+  if (overlay) return overlay;
+
+  overlay = document.createElement('div');
+  overlay.id = 'kb-loading-overlay';
+  overlay.className = 'kb-loading-overlay';
+  overlay.innerHTML = `
+    <div class="kb-loading-dialog" role="status" aria-live="polite" aria-busy="true">
+      <div class="kb-loading-spinner"></div>
+      <div class="kb-loading-text">处理中，请稍候...</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function setKbLoadingVisible(visible, message = '处理中，请稍候...') {
+  const overlay = ensureKbLoadingOverlay();
+  const textEl = overlay.querySelector('.kb-loading-text');
+  if (textEl) textEl.textContent = String(message || '处理中，请稍候...');
+  overlay.classList.toggle('show', Boolean(visible));
+  document.body.classList.toggle('kb-loading-active', Boolean(visible));
+}
+
+function showKbLoading(message = '处理中，请稍候...') {
+  if (!document.getElementById('docs-table')) return;
+  kbLoadingCount += 1;
+  setKbLoadingVisible(true, message);
+}
+
+function hideKbLoading() {
+  if (!document.getElementById('docs-table')) return;
+  kbLoadingCount = Math.max(0, kbLoadingCount - 1);
+  if (kbLoadingCount === 0) {
+    setKbLoadingVisible(false);
+  }
+}
+
+async function withKbLoading(message, runner) {
+  showKbLoading(message);
+  try {
+    return await runner();
+  } finally {
+    hideKbLoading();
+  }
 }
 
 async function copyTextToClipboard(text) {
@@ -224,7 +274,7 @@ async function apiRequest(path, options = {}) {
   const wrappedCode = Number(payload?.code || resp.status);
   const data = Object.prototype.hasOwnProperty.call(payload || {}, 'data') ? payload.data : payload;
   if (!resp.ok || wrappedCode >= 400) {
-    const msg = data?.error || payload?.error || `Request failed (${wrappedCode})`;
+    const msg = data?.error || payload?.error || `请求失败（${wrappedCode}）`;
     throw new Error(String(msg));
   }
   return data;
@@ -275,7 +325,7 @@ function addReferencesToMessage(results) {
     refItem.className = 'ref-item';
     const fileName = document.createElement('span');
     fileName.className = 'ref-filename';
-    fileName.textContent = String(item.filename || 'unknown');
+    fileName.textContent = String(item.filename || '未知文件');
     const similarity = document.createElement('span');
     similarity.className = 'ref-similarity';
     const simValue = item.similarity != null ? (item.similarity * 100).toFixed(1) + '%' : '-';
@@ -753,7 +803,7 @@ function createActionsBar(aiBubble, results) {
     refItem.className = 'ref-item';
     const fileName = document.createElement('span');
     fileName.className = 'ref-filename';
-    fileName.textContent = String(item.filename || 'unknown');
+    fileName.textContent = String(item.filename || '未知文件');
     const similarity = document.createElement('span');
     similarity.className = 'ref-similarity';
     const simValue = item.similarity != null ? (item.similarity * 100).toFixed(1) + '%' : '-';
@@ -1226,7 +1276,7 @@ async function runChatStream(body) {
 
   if (!resp.ok || !resp.body) {
     const text = await resp.text().catch(() => '');
-    throw new Error(text || `Request failed (${resp.status})`);
+    throw new Error(text || `请求失败（${resp.status}）`);
   }
 
   let answer = '';
@@ -1475,7 +1525,7 @@ function renderProviderOptions(providers) {
   if (!providerSelect) return;
   providerSelect.innerHTML = '';
   if (!Array.isArray(providers) || providers.length === 0) {
-    providerSelect.innerHTML = '<option value="">-- 无可用 provider --</option>';
+    providerSelect.innerHTML = '<option value="">-- 无可用服务商 --</option>';
     return;
   }
   for (const item of providers) {
@@ -1601,7 +1651,7 @@ async function submitModelConfig(event) {
   const isDefault = document.getElementById('model-is-default').checked;
 
   if (!name || !provider || !baseUrl || !modelName) {
-    showToast('名称/Provider/Base URL/Model Name 不能为空', false);
+    showToast('名称、服务商、接口地址、模型名称不能为空', false);
     return;
   }
 
@@ -1857,70 +1907,80 @@ function getChunkFilters() {
 }
 
 async function refreshChunks() {
-  const { filename, query } = getChunkFilters();
-  if (!filename) {
-    renderChunksTable([]);
-    chunkState.total = 0;
-    document.getElementById('chunk-page-info').textContent = '第 1 / 1 页';
-    return;
-  }
-  const params = new URLSearchParams();
-  params.set('pageIndex', String(chunkState.pageIndex));
-  params.set('pageSize', String(chunkState.pageSize));
-  if (filename) params.set('filename', filename);
-  if (query) params.set('q', query);
-  const data = await apiRequest(`/kb/chunks?${params.toString()}`);
-  const chunks = data.chunks || [];
-  chunkState.total = Number(data.count || 0);
-  renderChunksTable(chunks);
+  return withKbLoading('正在加载分片...', async () => {
+    const { filename, query } = getChunkFilters();
+    if (!filename) {
+      renderChunksTable([]);
+      chunkState.total = 0;
+      document.getElementById('chunk-page-info').textContent = '第 1 / 1 页';
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set('pageIndex', String(chunkState.pageIndex));
+    params.set('pageSize', String(chunkState.pageSize));
+    if (filename) params.set('filename', filename);
+    if (query) params.set('q', query);
+    const data = await apiRequest(`/kb/chunks?${params.toString()}`);
+    const chunks = data.chunks || [];
+    chunkState.total = Number(data.count || 0);
+    renderChunksTable(chunks);
 
-  const pageCount = Math.max(1, Math.ceil(chunkState.total / chunkState.pageSize));
-  if (chunkState.pageIndex > pageCount) {
-    chunkState.pageIndex = pageCount;
-  }
-  document.getElementById('chunk-page-info').textContent = `第 ${chunkState.pageIndex} / ${pageCount} 页`;
+    const pageCount = Math.max(1, Math.ceil(chunkState.total / chunkState.pageSize));
+    if (chunkState.pageIndex > pageCount) {
+      chunkState.pageIndex = pageCount;
+    }
+    document.getElementById('chunk-page-info').textContent = `第 ${chunkState.pageIndex} / ${pageCount} 页`;
+  });
 }
 
 async function updateChunk(id, text) {
-  await apiRequest(`/kb/chunk/${encodeURIComponent(id)}`, {
-    method: 'PUT',
-    body: { text },
+  return withKbLoading('正在保存分片...', async () => {
+    await apiRequest(`/kb/chunk/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: { text },
+    });
+    showToast('分片已更新');
+    await refreshChunks();
   });
-  showToast('分片已更新');
-  await refreshChunks();
 }
 
 async function deleteChunk(id) {
-  await apiRequest(`/kb/chunk/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  showToast('分片已删除');
-  await refreshChunks();
-  await refreshStats();
+  return withKbLoading('正在删除分片...', async () => {
+    await apiRequest(`/kb/chunk/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    showToast('分片已删除');
+    await refreshChunks();
+    await refreshStats();
+  });
 }
 
 async function rebuildChunks() {
-  const filename = String(chunkManagerState.selectedFilename || '').trim();
-  if (!filename) {
-    showToast('请先在文档列表中选择“分片管理”文档', false);
-    return;
-  }
-  const ok = window.confirm(`将按当前分片规则重建文档 ${filename} 的分片，是否继续？`);
-  if (!ok) return;
-  const data = await apiRequest('/kb/chunks/rebuild', {
-    method: 'POST',
-    body: { filename },
+  return withKbLoading('正在重建分片...', async () => {
+    const filename = String(chunkManagerState.selectedFilename || '').trim();
+    if (!filename) {
+      showToast('请先在文档列表中选择“分片管理”文档', false);
+      return;
+    }
+    const ok = window.confirm(`将按当前分片规则重建文档 ${filename} 的分片，是否继续？`);
+    if (!ok) return;
+    const data = await apiRequest('/kb/chunks/rebuild', {
+      method: 'POST',
+      body: { filename },
+    });
+    showToast(`重建完成，chunks=${Number(data.chunks_added || 0)}`);
+    await refreshChunks();
+    await refreshDocuments();
+    await refreshStats();
   });
-  showToast(`重建完成，chunks=${Number(data.chunks_added || 0)}`);
-  await refreshChunks();
-  await refreshDocuments();
-  await refreshStats();
 }
 
 async function refreshDocuments() {
-  const data = await apiRequest('/kb/documents');
-  const documents = data.documents || [];
-  // 保存原始数据用于筛选
-  window.allDocuments = documents;
-  applyDocumentFilters(documents);
+  return withKbLoading('正在加载文档列表...', async () => {
+    const data = await apiRequest('/kb/documents');
+    const documents = data.documents || [];
+    // 保存原始数据用于筛选
+    window.allDocuments = documents;
+    applyDocumentFilters(documents);
+  });
 }
 
 function applyDocumentFilters(documents) {
@@ -1962,99 +2022,111 @@ function applyDocumentFilters(documents) {
 }
 
 async function refreshStats() {
-  const data = await apiRequest('/stats');
-  document.getElementById('stats-output').textContent = JSON.stringify(data.stats || {}, null, 2);
+  return withKbLoading('正在加载统计信息...', async () => {
+    const data = await apiRequest('/stats');
+    document.getElementById('stats-output').textContent = JSON.stringify(data.stats || {}, null, 2);
+  });
 }
 
 async function addDocument(event) {
   event.preventDefault();
-  const filename = document.getElementById('doc-filename').value.trim();
-  const text = document.getElementById('doc-text').value;
-  if (!filename || !text.trim()) {
-    showToast('文件名和内容都不能为空', false);
-    return;
-  }
-  const data = await apiRequest('/kb/document', {
-    method: 'POST',
-    body: { filename, text },
+  return withKbLoading('正在新增文档...', async () => {
+    const filename = document.getElementById('doc-filename').value.trim();
+    const text = document.getElementById('doc-text').value;
+    if (!filename || !text.trim()) {
+      showToast('文件名和内容都不能为空', false);
+      return;
+    }
+    const data = await apiRequest('/kb/document', {
+      method: 'POST',
+      body: { filename, text },
+    });
+    showToast(`新增成功，chunks=${Number(data.chunks_added || 0)}`);
+    event.target.reset();
+    closeAddDocModal();
+    await refreshDocuments();
+    await refreshStats();
   });
-  showToast(`新增成功，chunks=${Number(data.chunks_added || 0)}`);
-  event.target.reset();
-  closeAddDocModal();
-  await refreshDocuments();
-  await refreshStats();
 }
 
 async function uploadFile(event) {
   event.preventDefault();
-  const fileInput = document.getElementById('upload-file');
-  const file = fileInput.files?.[0];
-  if (!file) {
-    showToast('请选择文件', false);
-    return;
-  }
+  return withKbLoading('正在上传文件...', async () => {
+    const fileInput = document.getElementById('upload-file');
+    const file = fileInput.files?.[0];
+    if (!file) {
+      showToast('请选择文件', false);
+      return;
+    }
 
-  const formData = new FormData();
-  formData.append('file', file);
-  const filename = document.getElementById('upload-filename').value.trim();
-  const encoding = document.getElementById('upload-encoding').value.trim();
-  if (filename) formData.append('filename', filename);
-  if (encoding) formData.append('encoding', encoding);
+    const formData = new FormData();
+    formData.append('file', file);
+    const filename = document.getElementById('upload-filename').value.trim();
+    const encoding = document.getElementById('upload-encoding').value.trim();
+    if (filename) formData.append('filename', filename);
+    if (encoding) formData.append('encoding', encoding);
 
-  const data = await apiRequest('/kb/file', { method: 'POST', body: formData });
-  showToast(`上传成功，chunks=${Number(data.chunks_added || 0)}`);
-  event.target.reset();
-  closeUploadModal();
-  await refreshDocuments();
-  await refreshStats();
+    const data = await apiRequest('/kb/file', { method: 'POST', body: formData });
+    showToast(`上传成功，chunks=${Number(data.chunks_added || 0)}`);
+    event.target.reset();
+    closeUploadModal();
+    await refreshDocuments();
+    await refreshStats();
+  });
 }
 
 async function uploadBatchFiles(event) {
   event.preventDefault();
-  const fileInput = document.getElementById('batch-files');
-  const files = Array.from(fileInput.files || []);
-  if (files.length === 0) {
-    showToast('请选择要上传的文件', false);
-    return;
-  }
+  return withKbLoading('正在批量上传...', async () => {
+    const fileInput = document.getElementById('batch-files');
+    const files = Array.from(fileInput.files || []);
+    if (files.length === 0) {
+      showToast('请选择要上传的文件', false);
+      return;
+    }
 
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append('files', file, file.name);
-  }
+    const formData = new FormData();
+    for (const file of files) {
+      formData.append('files', file, file.name);
+    }
 
-  const encoding = document.getElementById('batch-encoding').value.trim();
-  if (encoding) formData.append('encoding', encoding);
+    const encoding = document.getElementById('batch-encoding').value.trim();
+    if (encoding) formData.append('encoding', encoding);
 
-  const data = await apiRequest('/kb/files', { method: 'POST', body: formData });
-  showToast(`批量上传完成，chunks=${Number(data.chunks_added || 0)}`);
-  event.target.reset();
-  closeBatchUploadModal();
-  await refreshDocuments();
-  await refreshStats();
+    const data = await apiRequest('/kb/files', { method: 'POST', body: formData });
+    showToast(`批量上传完成，chunks=${Number(data.chunks_added || 0)}`);
+    event.target.reset();
+    closeBatchUploadModal();
+    await refreshDocuments();
+    await refreshStats();
+  });
 }
 
 async function deleteDocument(filename) {
-  if (!filename) {
-    showToast('文件名不能为空', false);
-    return;
-  }
+  return withKbLoading('正在删除文档...', async () => {
+    if (!filename) {
+      showToast('文件名不能为空', false);
+      return;
+    }
 
-  const data = await apiRequest(`/kb/document/${encodeURIComponent(filename)}`, {
-    method: 'DELETE',
+    const data = await apiRequest(`/kb/document/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    });
+    showToast(`删除完成，removed=${Number(data.chunks_removed || 0)}`);
+    await refreshDocuments();
+    await refreshStats();
   });
-  showToast(`删除完成，removed=${Number(data.chunks_removed || 0)}`);
-  await refreshDocuments();
-  await refreshStats();
 }
 
 async function clearKnowledgeBase() {
-  const ok = window.confirm('确定清空整个知识库吗？该操作不可撤销。');
-  if (!ok) return;
-  await apiRequest('/kb', { method: 'DELETE' });
-  showToast('知识库已清空');
-  await refreshDocuments();
-  await refreshStats();
+  return withKbLoading('正在清空知识库...', async () => {
+    const ok = window.confirm('确定清空整个知识库吗？该操作不可撤销。');
+    if (!ok) return;
+    await apiRequest('/kb', { method: 'DELETE' });
+    showToast('知识库已清空');
+    await refreshDocuments();
+    await refreshStats();
+  });
 }
 
 function bindEvents() {

@@ -2,14 +2,10 @@ import json
 import logging
 import math
 import os
-import re
-import tempfile
 import warnings
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
-from xml.etree import ElementTree as ET
 
 # Work around Windows OpenMP runtime conflicts (libomp vs libiomp5) that can
 # happen when mixing binary wheels (e.g. torch/faiss/tokenizers).
@@ -21,10 +17,6 @@ try:
 except Exception:  # pragma: no cover
     faiss = None
 import numpy as np
-try:
-    import pandas as pd
-except Exception:  # pragma: no cover
-    pd = None
 import torch
 
 try:
@@ -35,18 +27,10 @@ try:
     from .chat_model import ChatModel
 except ImportError:  # pragma: no cover
     from chat_model import ChatModel
-
 try:
-    from PyPDF2 import PdfReader
-except Exception:  # pragma: no cover
-    PdfReader = None
-
-try:
-    from docx import Document
-except Exception:  # pragma: no cover
-    Document = None
-
-_BINARY_TEXT_RE = re.compile(rb"[ -~]{4,}")
+    from .document_parser import DocumentParser
+except ImportError:  # pragma: no cover
+    from document_parser import DocumentParser
 logger = logging.getLogger(__name__)
 
 # transformers/huggingface_hub old call paths still pass resume_download.
@@ -435,6 +419,7 @@ class KnowledgeBase:
             default_temperature=self.chat_temperature,
             default_max_tokens=self.chat_max_tokens,
         )
+        self._document_parser = DocumentParser(logger=logger)
 
         self._chunks: List[_Chunk] = []
         self._embeddings = np.zeros((0, 1), dtype=np.float32)
@@ -1578,165 +1563,36 @@ class KnowledgeBase:
 
     @staticmethod
     def _read_text(path: Path) -> str:
-        for enc in ("utf-8", "gb18030", "latin-1"):
-            try:
-                return path.read_text(encoding=enc, errors="ignore")
-            except Exception:
-                continue
-        return ""
+        return DocumentParser.read_text(path)
 
     @staticmethod
     def _extract_text_from_xml_bytes(data: bytes) -> str:
-        try:
-            root = ET.fromstring(data)
-        except Exception:
-            return ""
-
-        vals = []
-        for elem in root.iter():
-            if elem.text:
-                t = elem.text.strip()
-                if t:
-                    vals.append(t)
-        return "\n".join(vals)
+        return DocumentParser.extract_text_from_xml_bytes(data)
 
     def _read_pdf(self, path: Path) -> str:
-        if PdfReader is None:
-            return ""
-        try:
-            reader = PdfReader(str(path))
-        except Exception:
-            return ""
-        lines = []
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            if text.strip():
-                lines.append(text)
-        return "\n".join(lines)
+        return self._document_parser.read_pdf(path)
 
     def _read_docx(self, path: Path) -> str:
-        if Document is None:
-            return ""
-        try:
-            doc = Document(str(path))
-        except Exception:
-            return ""
-        lines = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
-        return "\n".join(lines)
+        return self._document_parser.read_docx(path)
 
     def _read_doc(self, path: Path) -> str:
-        try:
-            import subprocess
-
-            result = subprocess.run(
-                ["antiword", str(path)],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout
-        except Exception:
-            pass
-        return self._read_binary_strings(path)
+        return self._document_parser.read_doc(path)
 
     def _read_excel(self, path: Path) -> str:
-        if pd is None:
-            return self._read_binary_strings(path)
-        try:
-            sheets = pd.read_excel(path, sheet_name=None, header=None)
-        except Exception:
-            return self._read_binary_strings(path)
-
-        rows = []
-        for sheet_name, df in sheets.items():
-            rows.append(f"# Sheet: {sheet_name}")
-            for row in df.fillna("").astype(str).values.tolist():
-                vals = [x.strip() for x in row if x and x.strip()]
-                if vals:
-                    rows.append(" | ".join(vals))
-        return "\n".join(rows)
+        return self._document_parser.read_excel(path)
 
     def _read_ofd(self, path: Path) -> str:
-        if not zipfile.is_zipfile(path):
-            return self._read_binary_strings(path)
-
-        texts = []
-        try:
-            with zipfile.ZipFile(path, "r") as zf:
-                for name in zf.namelist():
-                    lower = name.lower()
-                    if not lower.endswith(".xml"):
-                        continue
-                    try:
-                        data = zf.read(name)
-                    except Exception:
-                        continue
-                    txt = self._extract_text_from_xml_bytes(data)
-                    if txt.strip():
-                        texts.append(txt)
-        except Exception:
-            return self._read_binary_strings(path)
-        return "\n".join(texts)
+        return self._document_parser.read_ofd(path)
 
     def _read_pws(self, path: Path) -> str:
-        if zipfile.is_zipfile(path):
-            return self._read_ofd(path)
-        return self._read_binary_strings(path)
+        return self._document_parser.read_pws(path)
 
     @staticmethod
     def _read_binary_strings(path: Path) -> str:
-        try:
-            raw = path.read_bytes()
-        except Exception:
-            return ""
-
-        candidates = []
-        for enc in ("utf-8", "gb18030", "utf-16le", "latin-1"):
-            try:
-                s = raw.decode(enc, errors="ignore")
-                if s:
-                    candidates.append(s)
-            except Exception:
-                continue
-
-        ascii_strings = [m.decode("ascii", errors="ignore") for m in _BINARY_TEXT_RE.findall(raw)]
-        if ascii_strings:
-            candidates.append("\n".join(ascii_strings))
-
-        if not candidates:
-            return ""
-        candidates.sort(key=lambda x: len(x), reverse=True)
-        return candidates[0]
+        return DocumentParser.read_binary_strings(path)
 
     def _extract_text(self, path: Path) -> str:
-        ext = path.suffix.lower()
-        if ext in {
-            ".txt",
-            ".md",
-            ".rst",
-            ".json",
-            ".csv",
-            ".log",
-            ".py",
-            ".yaml",
-            ".yml",
-        }:
-            return self._read_text(path)
-        if ext == ".pdf":
-            return self._read_pdf(path)
-        if ext == ".ofd":
-            return self._read_ofd(path)
-        if ext in {".xls", ".xlsx", ".xlsm"}:
-            return self._read_excel(path)
-        if ext == ".docx":
-            return self._read_docx(path)
-        if ext in {".doc", ".wps"}:
-            return self._read_doc(path)
-        if ext in {".pws"}:
-            return self._read_pws(path)
-        return self._read_binary_strings(path)
+        return self._document_parser.extract_text(path)
 
     def add_document(self, filename: str, text: str) -> int:
         """
@@ -1873,17 +1729,7 @@ class KnowledgeBase:
 
     @staticmethod
     def _decode_uploaded_text_bytes(data: bytes, encoding: str | None = None) -> str:
-        if encoding:
-            try:
-                return data.decode(encoding)
-            except Exception as exc:
-                raise ValueError(f"Unable to decode file with encoding: {encoding}") from exc
-        for enc in ("utf-8-sig", "utf-8", "gb18030", "utf-16", "utf-16le", "utf-16be"):
-            try:
-                return data.decode(enc)
-            except Exception:
-                continue
-        return data.decode("utf-8", errors="replace")
+        return DocumentParser.decode_uploaded_text_bytes(data, encoding=encoding)
 
     def add_uploaded_file(
         self, filename: str, content: bytes, encoding: str | None = None
@@ -1938,45 +1784,14 @@ class KnowledgeBase:
         if not data:
             return 0
 
-        ext = Path(filename_clean).suffix.lower()
-        text_exts = {
-            ".txt",
-            ".md",
-            ".rst",
-            ".json",
-            ".csv",
-            ".log",
-            ".py",
-            ".yaml",
-            ".yml",
-        }
-
-        if encoding is not None or ext in text_exts:
-            text = self._decode_uploaded_text_bytes(data, encoding=encoding)
-            return self.add_document(filename_clean, text)
-
         upload_tmp_dir = self.persist_dir / ".upload_tmp"
         upload_tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                suffix=(ext or ".bin"),
-                dir=str(upload_tmp_dir),
-                delete=False,
-            ) as fp:
-                fp.write(data)
-                tmp_path = Path(fp.name)
-            text = self._extract_text(tmp_path)
-        finally:
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
-
-        if not (text or "").strip():
-            text = self._decode_uploaded_text_bytes(data, encoding=encoding)
+        text = self._document_parser.extract_uploaded_file_text(
+            filename=filename_clean,
+            content=data,
+            encoding=encoding,
+            temp_dir=upload_tmp_dir,
+        )
         return self.add_document(filename_clean, text)
 
     def list_chunks(

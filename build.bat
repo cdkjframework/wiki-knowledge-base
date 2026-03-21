@@ -193,6 +193,10 @@ goto :eof
     echo # Install requirements
     echo if (Test-Path "$ScriptPath\requirements.txt") {
     echo     Write-Host "Installing dependencies..."
+    echo     if (Test-Path Env:PIP_REQUIRE_HASHES) {
+    echo         Write-Host "Clearing PIP_REQUIRE_HASHES for dependency install..." -ForegroundColor Yellow
+    echo         Remove-Item Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyContinue
+    echo     }
     echo     pip install -r requirements.txt
     echo     Write-Host "Dependencies installed successfully"
     echo } else {

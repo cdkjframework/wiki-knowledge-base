@@ -172,6 +172,10 @@ if (Test-Path `$ActivateScript) {
 # Install requirements
 if (Test-Path "`$ScriptPath\requirements.txt") {
     Write-Host "Installing dependencies..."
+    if (Test-Path Env:PIP_REQUIRE_HASHES) {
+        Write-Host "Clearing PIP_REQUIRE_HASHES for dependency install..." -ForegroundColor Yellow
+        Remove-Item Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyContinue
+    }
     pip install -r requirements.txt
     Write-Host "Dependencies installed successfully"
 } else {

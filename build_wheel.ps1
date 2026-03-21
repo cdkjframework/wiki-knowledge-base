@@ -340,6 +340,10 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
 }
 
 Write-Host "[*] Installing dependencies..." -ForegroundColor Cyan
+if (Test-Path Env:PIP_REQUIRE_HASHES) {
+    Write-Host "[*] Clearing PIP_REQUIRE_HASHES for dependency install..." -ForegroundColor Yellow
+    Remove-Item Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyContinue
+}
 pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
     throw "pip install -r requirements.txt failed"
@@ -743,6 +747,7 @@ if [[ -f ".venv/bin/activate" ]]; then
 fi
 
 echo "[*] Installing dependencies..."
+unset PIP_REQUIRE_HASHES || true
 pip install -r requirements.txt
 
 has_nvidia=0

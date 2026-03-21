@@ -18,6 +18,42 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _load_project_config() -> Dict[str, Any]:
+    cfg_env = str(os.getenv("KB_CONFIG_PATH", "")).strip()
+    if cfg_env:
+        cfg_path = Path(cfg_env).expanduser()
+    else:
+        cfg_path = Path(__file__).resolve().parent.parent / "config.json"
+    try:
+        if cfg_path.exists():
+            with cfg_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception as exc:
+        logger.warning("加载配置文件失败，使用默认服务地址: %s", exc)
+    return {}
+
+
+def _get_server_defaults() -> Dict[str, Any]:
+    cfg = _load_project_config()
+    server_cfg = cfg.get("server", {})
+    if not isinstance(server_cfg, dict):
+        server_cfg = {}
+
+    host = str(server_cfg.get("host", "0.0.0.0") or "0.0.0.0").strip() or "0.0.0.0"
+    port_raw = server_cfg.get("port", 5000)
+    try:
+        port = int(port_raw)
+    except Exception:
+        port = 5000
+    if port <= 0 or port > 65535:
+        logger.warning("配置中的 server.port 非法，回退默认端口 5000: %s", port_raw)
+        port = 5000
+
+    return {"host": host, "port": port}
+
+
 class Main:
     """Application startup entry: initialize KB and preload models."""
 
@@ -127,10 +163,10 @@ class Main:
         return HttpApiServer(api=api, host=host, port=port)
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(default_host: str, default_port: int) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Knowledge base startup entry.")
-    parser.add_argument("--host", default="0.0.0.0", help="HTTP bind host.")
-    parser.add_argument("--port", type=int, default=5000, help="HTTP bind port.")
+    parser.add_argument("--host", default=default_host, help="HTTP bind host.")
+    parser.add_argument("--port", type=int, default=default_port, help="HTTP bind port.")
     parser.add_argument(
         "--no-preload-embedding",
         action="store_true",
@@ -152,7 +188,11 @@ def _main() -> None:
         logger.info("API module loaded from: %s", getattr(api_module, "__file__", "unknown"))
     except Exception:
         logger.info("API module loaded from: unknown")
-    args = _parse_args()
+    server_defaults = _get_server_defaults()
+    args = _parse_args(
+        default_host=str(server_defaults.get("host", "0.0.0.0")),
+        default_port=int(server_defaults.get("port", 5000)),
+    )
     logger.info(
         "Startup args: host=%s port=%s preload_embedding=%s preload_reranker=%s",
         args.host,

@@ -1439,6 +1439,21 @@ function closeRetrievalSettingsModal() {
   document.body.style.overflow = '';
 }
 
+function openStatsModal() {
+  const modal = document.getElementById('stats-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  refreshStats().catch((err) => showToast(err.message || '统计信息加载失败', false));
+}
+
+function closeStatsModal() {
+  const modal = document.getElementById('stats-modal');
+  if (!modal) return;
+  modal.classList.remove('show');
+  document.body.style.overflow = '';
+}
+
 function openAddDocModal() {
   const modal = document.getElementById('add-doc-modal');
   if (!modal) return;
@@ -2024,8 +2039,298 @@ function applyDocumentFilters(documents) {
 async function refreshStats() {
   return withKbLoading('正在加载统计信息...', async () => {
     const data = await apiRequest('/stats');
-    document.getElementById('stats-output').textContent = JSON.stringify(data.stats || {}, null, 2);
+    renderStatsTable(data.stats || {});
   });
+}
+
+function formatBytes(bytes) {
+  const num = Number(bytes);
+  if (!Number.isFinite(num) || num < 0) return '-';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let val = num;
+  let idx = 0;
+  while (val >= 1024 && idx < units.length - 1) {
+    val /= 1024;
+    idx += 1;
+  }
+  return `${val.toFixed(2)} ${units[idx]}`;
+}
+
+function formatBytesPair(humanValue, bytesValue) {
+  const bytesNum = Number(bytesValue);
+  if (humanValue && Number.isFinite(bytesNum)) {
+    return `${humanValue} (${bytesNum} B)`;
+  }
+  if (humanValue) return String(humanValue);
+  if (Number.isFinite(bytesNum)) return `${formatBytes(bytesNum)} (${bytesNum} B)`;
+  return '-';
+}
+
+function formatSimpleValue(value) {
+  if (value === null || value === undefined || value === '') return '-';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function formatDeviceMap(humanMap, bytesMap) {
+  const map = humanMap && typeof humanMap === 'object' ? humanMap : bytesMap;
+  if (!map || typeof map !== 'object') return '-';
+  const entries = Object.entries(map);
+  if (entries.length === 0) return '-';
+  if (map === humanMap) {
+    return entries.map(([k, v]) => `${k}: ${v}`).join(', ');
+  }
+  return entries.map(([k, v]) => `${k}: ${formatBytes(v)} (${Number(v)} B)`).join(', ');
+}
+
+function createTable(headers, rows) {
+  const table = document.createElement('table');
+  table.className = 'stats-table';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  headers.forEach((h) => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  if (!rows || rows.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = headers.length;
+    td.textContent = '暂无数据';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  } else {
+    rows.forEach((row) => {
+      const tr = document.createElement('tr');
+      row.forEach((cell) => {
+        const td = document.createElement('td');
+        td.textContent = formatSimpleValue(cell);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+function createPairTable(rows, leftHeader = '项目', rightHeader = '项目') {
+  const pairRows = [];
+  for (let i = 0; i < rows.length; i += 2) {
+    const left = rows[i] || ['-', '-'];
+    const right = rows[i + 1] || ['-', '-'];
+    pairRows.push([left[0], left[1], right[0] || '-', right[1] || '-']);
+  }
+  return createTable([leftHeader, '值', rightHeader, '值'], pairRows);
+}
+
+function renderStatsTable(stats) {
+  const container = document.getElementById('stats-output');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!stats || Object.keys(stats).length === 0) {
+    container.textContent = '暂无数据';
+    return;
+  }
+
+  const addSection = (title, table, target = container) => {
+    const section = document.createElement('div');
+    section.className = 'stats-section';
+    const header = document.createElement('h4');
+    header.textContent = title;
+    section.appendChild(header);
+    section.appendChild(table);
+    target.appendChild(section);
+  };
+
+  const statsGrid = document.createElement('div');
+  statsGrid.className = 'stats-grid';
+  container.appendChild(statsGrid);
+
+  const baseRows = [
+    ['存储目录', stats.persist_dir],
+    ['模型缓存目录', stats.model_cache_dir],
+    ['文档数', stats.document_count],
+    ['分片数', stats.chunk_count],
+    ['向量维度', stats.dimension],
+    ['索引向量数', stats.index_total],
+    ['Embedding 模型', stats.embedding_model],
+    ['Reranker 模型', stats.reranker_model],
+    ['Chat 模型', stats.chat_model],
+    ['LM Studio 聊天', stats.use_lm_studio_chat],
+  ];
+  const baseSection = createPairTable(baseRows, '项目', '项目');
+  baseSection.classList.add('stats-table-full');
+  addSection('基础统计', baseSection, statsGrid);
+
+  const modelTotal = stats.models_memory_total || {};
+  const modelTotalRows = [
+    ['总计', formatBytesPair(modelTotal.human_total, modelTotal.bytes_total)],
+    ['按设备', formatDeviceMap(modelTotal.human_by_device, modelTotal.bytes_by_device)],
+  ];
+  addSection('模型内存汇总', createTable(['项目', '值'], modelTotalRows));
+
+  const loadedModels = stats.loaded_models || {};
+  const modelOrder = ['embedding', 'reranker', 'chat'];
+  const modelRows = [];
+  const backendLabel = (val) => {
+    if (val === 'local') return '本地';
+    if (val === 'lm_studio') return 'LM Studio';
+    return val || '-';
+  };
+  modelOrder.forEach((key) => {
+    const info = loadedModels[key];
+    if (!info) return;
+    const mem = info.memory || {};
+    modelRows.push([
+      key,
+      info.name,
+      backendLabel(info.backend),
+      info.loaded,
+      info.device || '-',
+      formatBytesPair(mem.human_total, mem.bytes_total),
+      formatDeviceMap(mem.human_by_device, mem.bytes_by_device),
+    ]);
+  });
+  addSection(
+    '已加载模型',
+    createTable(['类型', '模型', '后端', '已加载', '设备', '内存总计', '按设备'], modelRows)
+  );
+
+  const process = stats.process_memory || null;
+  const processMemoryRows = [];
+  if (process) {
+    const fields = [
+      ['RSS', 'human_rss', 'rss_bytes'],
+      ['VMS', 'human_vms', 'vms_bytes'],
+      ['USS', null, 'uss_bytes'],
+      ['PSS', null, 'pss_bytes'],
+      ['Shared', null, 'shared_bytes'],
+      ['Text', null, 'text_bytes'],
+      ['Data', null, 'data_bytes'],
+      ['Dirty', null, 'dirty_bytes'],
+      ['Working Set', 'human_working_set', 'working_set_bytes'],
+      ['Private', 'human_private', 'private_bytes'],
+      ['Peak Working Set', null, 'peak_working_set_bytes'],
+      ['Pagefile', null, 'pagefile_bytes'],
+      ['Peak Pagefile', null, 'peak_pagefile_bytes'],
+      ['Max RSS', 'human_max_rss', 'max_rss_bytes'],
+    ];
+    fields.forEach(([label, humanKey, bytesKey]) => {
+      const humanVal = humanKey ? process[humanKey] : null;
+      const bytesVal = bytesKey ? process[bytesKey] : null;
+      if (humanVal !== undefined && humanVal !== null) {
+        processMemoryRows.push([label, formatBytesPair(humanVal, bytesVal)]);
+        return;
+      }
+      if (bytesVal !== undefined && bytesVal !== null) {
+        processMemoryRows.push([label, formatBytesPair(null, bytesVal)]);
+      }
+    });
+  }
+  const processMemSection = createPairTable(processMemoryRows, '指标', '指标');
+  processMemSection.classList.add('stats-table-full');
+  addSection('进程内存', processMemSection, statsGrid);
+
+  const system = stats.system_usage || null;
+  const systemRows = [];
+  if (system) {
+    systemRows.push(['CPU 使用率', system.cpu_percent != null ? `${system.cpu_percent}%` : '-']);
+    systemRows.push(['CPU 核心数', system.cpu_count != null ? system.cpu_count : '-']);
+    if (Array.isArray(system.load_avg)) {
+      systemRows.push(['负载', system.load_avg.map((x) => Number(x).toFixed(2)).join(', ')]);
+    }
+    const mem = system.memory || null;
+    if (mem) {
+      systemRows.push(['内存总量', formatBytesPair(mem.human_total, mem.total_bytes)]);
+      systemRows.push(['内存已用', formatBytesPair(mem.human_used, mem.used_bytes)]);
+      systemRows.push(['内存可用', formatBytesPair(mem.human_available, mem.available_bytes)]);
+      systemRows.push(['内存使用率', mem.percent != null ? `${mem.percent}%` : '-']);
+    }
+    const swap = system.swap || null;
+    if (swap) {
+      systemRows.push(['交换分区总量', formatBytesPair(swap.human_total, swap.total_bytes)]);
+      systemRows.push(['交换分区已用', formatBytesPair(swap.human_used, swap.used_bytes)]);
+      systemRows.push(['交换分区使用率', swap.percent != null ? `${swap.percent}%` : '-']);
+    }
+  }
+  const systemSection = createPairTable(systemRows, '指标', '指标');
+  systemSection.classList.add('stats-table-full');
+  addSection('系统使用率', systemSection, statsGrid);
+
+  const gpuUsage = stats.gpu_usage || null;
+  const gpuUsageRows = [];
+  if (gpuUsage && Array.isArray(gpuUsage.devices)) {
+    gpuUsage.devices.forEach((dev) => {
+      gpuUsageRows.push([
+        dev.index,
+        dev.name || '-',
+        dev.utilization_gpu_percent != null ? `${dev.utilization_gpu_percent}%` : '-',
+        dev.utilization_memory_percent != null ? `${dev.utilization_memory_percent}%` : '-',
+        formatBytesPair(dev.human_memory_total, dev.memory_total_bytes),
+        formatBytesPair(dev.human_memory_used, dev.memory_used_bytes),
+        formatBytesPair(dev.human_memory_free, dev.memory_free_bytes),
+      ]);
+    });
+  }
+  addSection(
+    'GPU 使用率',
+    createTable(
+      ['编号', '名称', 'GPU 使用率', '显存使用率', '总显存', '已用显存', '空闲显存'],
+      gpuUsageRows
+    )
+  );
+
+  const gpu = stats.gpu_memory || null;
+  const gpuRows = [];
+  if (gpu && Array.isArray(gpu.devices)) {
+    gpu.devices.forEach((dev) => {
+      gpuRows.push([
+        dev.index,
+        dev.name || '-',
+        formatBytesPair(dev.human_total, dev.total_bytes),
+        formatBytesPair(dev.human_free, dev.free_bytes),
+        formatBytesPair(dev.human_allocated, dev.allocated_bytes),
+        formatBytesPair(dev.human_reserved, dev.reserved_bytes),
+        formatBytesPair(null, dev.max_allocated_bytes),
+        formatBytesPair(null, dev.max_reserved_bytes),
+      ]);
+    });
+  }
+  addSection(
+    'GPU 内存',
+    createTable(
+      ['编号', '名称', '总显存', '可用', '已分配', '已保留', '最大分配', '最大保留'],
+      gpuRows
+    )
+  );
+
+  const processes = Array.isArray(stats.processes) ? stats.processes : [];
+  const processRows = processes.map((proc) => [
+    proc.pid,
+    proc.name,
+    proc.cpu_percent != null ? `${proc.cpu_percent}%` : '-',
+    proc.gpu_util_percent != null ? `${proc.gpu_util_percent}%` : '-',
+    proc.memory_percent != null ? `${proc.memory_percent.toFixed(2)}%` : '-',
+    formatBytesPair(proc.human_memory_rss, proc.memory_rss_bytes),
+    formatBytesPair(proc.human_memory_vms, proc.memory_vms_bytes),
+    proc.gpu_mem_util_percent != null ? `${proc.gpu_mem_util_percent}%` : '-',
+    formatBytesPair(proc.human_gpu_memory, proc.gpu_memory_bytes),
+    proc.gpu_memory_percent != null ? `${proc.gpu_memory_percent.toFixed(4)}%` : '-',
+  ]);
+  addSection(
+    '进程资源占用',
+    createTable(
+      ['PID', '进程', 'CPU', 'GPU', '内存%', 'RSS', 'VMS', '显存使用率', '显存', '显存%'],
+      processRows
+    )
+  );
 }
 
 async function addDocument(event) {
@@ -2412,6 +2717,11 @@ function bindEvents() {
   if (btnOpenRetrievalSettings) {
     btnOpenRetrievalSettings.addEventListener('click', openRetrievalSettingsModal);
   }
+
+  const btnOpenStats = document.getElementById('btn-open-stats');
+  if (btnOpenStats) {
+    btnOpenStats.addEventListener('click', openStatsModal);
+  }
   
   const retrievalModalCloseBtn = document.getElementById('retrieval-modal-close-btn');
   if (retrievalModalCloseBtn) {
@@ -2428,6 +2738,19 @@ function bindEvents() {
     retrievalSettingsModal.addEventListener('click', (event) => {
       if (event.target === retrievalSettingsModal) {
         closeRetrievalSettingsModal();
+      }
+    });
+  }
+
+  const statsModalCloseBtn = document.getElementById('stats-modal-close-btn');
+  if (statsModalCloseBtn) {
+    statsModalCloseBtn.addEventListener('click', closeStatsModal);
+  }
+  const statsModal = document.getElementById('stats-modal');
+  if (statsModal) {
+    statsModal.addEventListener('click', (event) => {
+      if (event.target === statsModal) {
+        closeStatsModal();
       }
     });
   }
@@ -2536,6 +2859,10 @@ function bindEvents() {
     if (event.key === 'Escape' && chunkManagerModal && chunkManagerModal.classList.contains('show')) {
       closeChunkManagerModal();
     }
+    const statsModal = document.getElementById('stats-modal');
+    if (event.key === 'Escape' && statsModal && statsModal.classList.contains('show')) {
+      closeStatsModal();
+    }
   });
 }
 
@@ -2581,17 +2908,7 @@ async function bootstrap() {
       loadRetrievalSettings();
       initTasks.push(refreshDocuments().catch(() => {}));
       
-      // 统计信息折叠/展开功能
-      const statsHeader = document.getElementById('stats-header');
-      const statsContent = document.getElementById('stats-content');
-      const statsToggleIcon = document.getElementById('stats-toggle-icon');
-      if (statsHeader && statsContent && statsToggleIcon) {
-        statsHeader.addEventListener('click', () => {
-          const isHidden = statsContent.style.display === 'none';
-          statsContent.style.display = isHidden ? 'block' : 'none';
-          statsToggleIcon.textContent = isHidden ? '▲' : '▼';
-        });
-      }
+      // 统计信息改为弹窗显示
     }
     
     // 模型管理页面

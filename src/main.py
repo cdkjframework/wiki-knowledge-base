@@ -37,6 +37,12 @@ def _load_project_config() -> Dict[str, Any]:
 
 def _get_server_defaults() -> Dict[str, Any]:
     cfg = _load_project_config()
+    kb_cfg = cfg.get("knowledge_base", {})
+    if not isinstance(kb_cfg, dict):
+        kb_cfg = {}
+    preload_cfg = kb_cfg.get("preload", {})
+    if not isinstance(preload_cfg, dict):
+        preload_cfg = {}
     server_cfg = cfg.get("server", {})
     if not isinstance(server_cfg, dict):
         server_cfg = {}
@@ -51,7 +57,14 @@ def _get_server_defaults() -> Dict[str, Any]:
         logger.warning("配置中的 server.port 非法，回退默认端口 5000: %s", port_raw)
         port = 5000
 
-    return {"host": host, "port": port}
+    preload_embedding = preload_cfg.get("embedding", False)
+    preload_reranker = preload_cfg.get("reranker", False)
+    return {
+        "host": host,
+        "port": port,
+        "preload_embedding": bool(preload_embedding),
+        "preload_reranker": bool(preload_reranker),
+    }
 
 
 class Main:
@@ -86,7 +99,7 @@ class Main:
             logger.warning("%s; continue startup because KB_WARMUP_STRICT is not enabled.", msg)
 
     def startup(
-        self, preload_embedding: bool = True, preload_reranker: bool = True
+        self, preload_embedding: bool = False, preload_reranker: bool = False
     ) -> KnowledgeBaseApi:
         if self._api is not None:
             return self._api
@@ -152,8 +165,8 @@ class Main:
         self,
         host: str = "0.0.0.0",
         port: int = 5000,
-        preload_embedding: bool = True,
-        preload_reranker: bool = True,
+        preload_embedding: bool = False,
+        preload_reranker: bool = False,
     ) -> HttpApiServer:
         api = self.startup(
             preload_embedding=preload_embedding,
@@ -180,6 +193,13 @@ def _parse_args(default_host: str, default_port: int) -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _read_env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _main() -> None:
     logs_dir = setup_logging()
     logger.info("日志目录: %s", logs_dir)
@@ -193,19 +213,29 @@ def _main() -> None:
         default_host=str(server_defaults.get("host", "0.0.0.0")),
         default_port=int(server_defaults.get("port", 5000)),
     )
+    cfg_preload_embedding = bool(server_defaults.get("preload_embedding", False))
+    cfg_preload_reranker = bool(server_defaults.get("preload_reranker", False))
+    env_preload_embedding = _read_env_flag("KB_PRELOAD_EMBEDDING", default=False)
+    env_preload_reranker = _read_env_flag("KB_PRELOAD_RERANKER", default=False)
+    preload_embedding = (cfg_preload_embedding or env_preload_embedding) and not args.no_preload_embedding
+    preload_reranker = (cfg_preload_reranker or env_preload_reranker) and not args.no_preload_reranker
     logger.info(
-        "Startup args: host=%s port=%s preload_embedding=%s preload_reranker=%s",
+        "Startup args: host=%s port=%s preload_embedding=%s preload_reranker=%s (cfg: %s/%s env: %s/%s)",
         args.host,
         args.port,
-        not args.no_preload_embedding,
-        not args.no_preload_reranker,
+        preload_embedding,
+        preload_reranker,
+        cfg_preload_embedding,
+        cfg_preload_reranker,
+        env_preload_embedding,
+        env_preload_reranker,
     )
     app = Main()
     server = app.start_http(
         host=args.host,
         port=args.port,
-        preload_embedding=not args.no_preload_embedding,
-        preload_reranker=not args.no_preload_reranker,
+        preload_embedding=preload_embedding,
+        preload_reranker=preload_reranker,
     )
     payload = {
         "ok": True,

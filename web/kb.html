@@ -42,28 +42,18 @@
           <button id="btn-open-batch-upload" class="btn size-small">批量上传</button>
           <button id="btn-clear-kb" class="btn danger size-small">清空知识库</button>
         </div>
-        <button id="btn-open-retrieval-settings" class="btn-icon" title="检索设置">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button id="btn-open-stats" class="btn-icon" title="统计信息" aria-label="统计信息">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 3v18h18"></path>
+              <rect x="7" y="12" width="3" height="6"></rect>
+              <rect x="12" y="9" width="3" height="9"></rect>
+              <rect x="17" y="6" width="3" height="12"></rect>
+            </svg>
+          </button>
+          <button id="btn-open-retrieval-settings" class="btn-icon" title="检索设置">
 <svg t="1773120997742" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5614" width="24" height="24"><path d="M1016.832 606.208q2.048 12.288-1.024 29.696t-10.24 35.328-17.408 32.256-22.528 20.48-21.504 6.144-20.48-4.096q-10.24-3.072-25.6-5.632t-31.232-1.024-31.744 6.656-27.136 17.408q-24.576 25.6-28.672 58.368t9.216 62.464q10.24 20.48-3.072 40.96-6.144 8.192-19.456 16.896t-29.184 15.872-33.28 11.264-30.72 4.096q-9.216 0-17.408-7.168t-11.264-15.36l-1.024 0q-11.264-31.744-38.4-54.784t-62.976-23.04q-34.816 0-62.976 23.04t-39.424 53.76q-5.12 12.288-15.36 17.92t-22.528 5.632q-14.336 0-32.256-5.12t-35.84-12.8-32.256-17.92-21.504-20.48q-5.12-7.168-5.632-16.896t7.68-27.136q11.264-23.552 8.704-53.76t-26.112-55.808q-14.336-15.36-34.816-19.968t-38.912-3.584q-21.504 1.024-44.032 8.192-14.336 4.096-28.672-2.048-11.264-4.096-20.992-18.944t-17.408-32.768-11.776-36.864-2.048-31.232q3.072-22.528 20.48-28.672 30.72-12.288 55.296-40.448t24.576-62.976q0-35.84-24.576-62.464t-55.296-38.912q-9.216-3.072-15.36-14.848t-6.144-24.064q0-13.312 4.096-29.696t10.752-31.744 15.36-28.16 18.944-18.944q8.192-5.12 15.872-4.096t16.896 4.096q30.72 12.288 64 7.68t58.88-29.184q12.288-12.288 17.92-30.208t7.168-35.328 0-31.744-2.56-20.48q-2.048-6.144-3.584-14.336t1.536-14.336q6.144-14.336 22.016-25.088t34.304-17.92 35.84-10.752 27.648-3.584q13.312 0 20.992 8.704t10.752 17.92q11.264 27.648 36.864 48.64t60.416 20.992q35.84 0 63.488-19.968t38.912-50.688q4.096-8.192 12.8-16.896t17.92-8.704q14.336 0 31.232 4.096t33.28 11.264 30.208 18.432 22.016 24.576q5.12 8.192 3.072 17.92t-4.096 13.824q-13.312 29.696-8.192 62.464t29.696 57.344 60.416 27.136 66.56-11.776q8.192-5.12 19.968-4.096t19.968 9.216q15.36 14.336 27.136 43.52t15.872 58.88q2.048 17.408-5.632 27.136t-15.872 12.8q-31.744 11.264-54.272 39.424t-22.528 64q0 34.816 18.944 60.928t49.664 37.376q7.168 4.096 12.288 8.192 11.264 9.216 15.36 23.552zM540.672 698.368q46.08 0 87.04-17.408t71.168-48.128 47.616-71.168 17.408-86.528-17.408-86.528-47.616-70.656-71.168-47.616-87.04-17.408-86.528 17.408-70.656 47.616-47.616 70.656-17.408 86.528 17.408 86.528 47.616 71.168 70.656 48.128 86.528 17.408z" p-id="5615"></path></svg>
         </button>
-      </div>
-
-      <div class="card" id="stats-box">
-        <div style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;" id="stats-header">
-          <h3 style="margin: 0;">统计信息</h3>
-          <div style="display: flex; gap: 10px; align-items: center;">
-            <button id="btn-refresh-stats" class="btn-icon" title="刷新统计" aria-label="刷新统计" onclick="event.stopPropagation();">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M23 4v6h-6"></path>
-                <path d="M1 20v-6h6"></path>
-                <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"></path>
-                <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"></path>
-              </svg>
-            </button>
-            <span id="stats-toggle-icon" style="font-size: 1.2rem; user-select: none;">▼</span>
-          </div>
-        </div>
-        <div id="stats-content" style="display: none; margin-top: 16px;">
-          <pre id="stats-output" class="mono">点击"刷新统计"加载数据</pre>
         </div>
       </div>
 
@@ -139,7 +129,6 @@
     </div>
   </div>
 
-  <!-- 分片管理模态框 -->
   <div id="chunk-manager-modal" class="modal">
     <div class="modal-content chunk-manager-modal-content">
       <div class="modal-header">
@@ -203,7 +192,6 @@
     </div>
   </div>
 
-  <!-- 新增文档模态框 -->
   <div id="add-doc-modal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
@@ -227,7 +215,6 @@
     </div>
   </div>
 
-  <!-- 上传文件模态框 -->
   <div id="upload-modal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
@@ -255,7 +242,6 @@
     </div>
   </div>
 
-  <!-- 批量上传模态框 -->
   <div id="batch-upload-modal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
@@ -279,7 +265,6 @@
     </div>
   </div>
 
-  <!-- 检索设置模态框 -->
   <div id="retrieval-settings-modal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
@@ -304,6 +289,22 @@
           <button id="btn-save-retrieval-settings" class="btn primary size-small">💾 保存设置</button>
           <button id="btn-cancel-retrieval-modal" class="btn size-small">取消</button>
         </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="stats-modal" class="modal">
+    <div class="modal-content stats-modal-content">
+      <div class="modal-header">
+        <h3>统计信息</h3>
+        <button class="modal-close" id="stats-modal-close-btn">&times;</button>
+      </div>
+      <div class="stats-modal-body">
+        <div class="stats-toolbar">
+          <button id="btn-refresh-stats" class="btn size-small">刷新统计</button>
+        </div>
+        <div id="stats-output" class="stats-output">点击“刷新统计”加载数据</div>
       </div>
     </div>
   </div>

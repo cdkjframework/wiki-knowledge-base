@@ -1,7 +1,10 @@
+import gc
 import json
 import logging
 import math
 import os
+import time
+import threading
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -197,6 +200,7 @@ class KnowledgeBase:
         lm_cfg = kb_cfg.get("lm_studio", {}) if isinstance(kb_cfg.get("lm_studio"), dict) else {}
         chat_cfg = kb_cfg.get("chat", {}) if isinstance(kb_cfg.get("chat"), dict) else {}
         chunk_cfg = kb_cfg.get("chunking", {}) if isinstance(kb_cfg.get("chunking"), dict) else {}
+        memory_cfg = kb_cfg.get("memory", {}) if isinstance(kb_cfg.get("memory"), dict) else {}
         search_cfg = config.get("search", {}) if isinstance(config.get("search"), dict) else {}
         retrieval_cfg = (
             kb_cfg.get("retrieval", {}) if isinstance(kb_cfg.get("retrieval"), dict) else {}
@@ -248,6 +252,8 @@ class KnowledgeBase:
         cfg_rerank_weight = retrieval_cfg.get(
             "rerank_weight", kb_cfg.get("rerank_weight", 0.65)
         )
+        cfg_release_gpu_cache = memory_cfg.get("release_gpu_cache", False)
+        cfg_unload_idle_seconds = memory_cfg.get("unload_models_idle_seconds", 0)
 
         persist_path = Path(persist_dir or cfg_persist_dir)
         if not persist_path.is_absolute():
@@ -426,6 +432,14 @@ class KnowledgeBase:
         self._index = None
         self._faiss_gpu_resources = None
         self._faiss_use_gpu = self._should_use_faiss_gpu()
+        self.release_gpu_cache = bool(cfg_release_gpu_cache)
+        try:
+            self.unload_models_idle_seconds = max(0, int(cfg_unload_idle_seconds))
+        except Exception:
+            self.unload_models_idle_seconds = 0
+        self._model_last_used: Dict[str, float] = {}
+        self._active_lock = threading.Lock()
+        self._active_requests = 0
         logger.info("FAISS runtime: module=%s gpu_enabled=%s", bool(faiss is not None), self._faiss_use_gpu)
 
         self._load()
@@ -1012,6 +1026,8 @@ class KnowledgeBase:
         chosen_model = str(model or self.chat_model_name or "").strip()
         if not chosen_model:
             raise RuntimeError("No chat model configured")
+        if not self.use_lm_studio_chat:
+            self._touch_model("chat")
         return self._chat_backend.chat_once(
             messages=messages,
             model=chosen_model,
@@ -1086,6 +1102,8 @@ class KnowledgeBase:
         chosen_model = str(model or self.chat_model_name or "").strip()
         if not chosen_model:
             raise RuntimeError("No chat model configured")
+        if not self.use_lm_studio_chat:
+            self._touch_model("chat")
         return self._chat_backend.chat_stream(
             messages=messages,
             model=chosen_model,
@@ -1135,6 +1153,7 @@ class KnowledgeBase:
             )
             return vecs
         self._ensure_embed_model()
+        self._touch_model("embedding")
         all_vecs = []
 
         for start in range(0, len(texts), batch_size):
@@ -1208,6 +1227,7 @@ class KnowledgeBase:
                 )
                 return scores
         self._ensure_reranker_model()
+        self._touch_model("reranker")
         scores: List[float] = []
 
         if hasattr(self._rerank_model, "compute_score"):
@@ -1483,6 +1503,13 @@ class KnowledgeBase:
         dim = self.dimension
         if dim is None and self._embeddings.ndim == 2 and self._embeddings.shape[1] > 0:
             dim = int(self._embeddings.shape[1])
+        loaded_models = self._collect_loaded_model_stats()
+        total_memory = self._aggregate_model_memory(loaded_models)
+        process_memory = self._collect_process_memory()
+        gpu_memory = self._collect_gpu_memory()
+        system_usage = self._collect_system_usage()
+        gpu_usage = self._collect_gpu_usage()
+        processes = self._collect_process_usage(gpu_usage=gpu_usage)
         return {
             "persist_dir": str(self.persist_dir),
             "model_cache_dir": str(self.model_cache_dir),
@@ -1494,7 +1521,636 @@ class KnowledgeBase:
             "reranker_model": self.reranker_model_name,
             "chat_model": self.chat_model_name,
             "use_lm_studio_chat": self.use_lm_studio_chat,
+            "loaded_models": loaded_models,
+            "models_memory_total": total_memory,
+            "process_memory": process_memory,
+            "gpu_memory": gpu_memory,
+            "system_usage": system_usage,
+            "gpu_usage": gpu_usage,
+            "processes": processes,
         }
+
+    @staticmethod
+    def _human_bytes(num_bytes: int | float | None) -> str | None:
+        if num_bytes is None:
+            return None
+        try:
+            val = float(num_bytes)
+        except Exception:
+            return None
+        if val < 0:
+            return None
+        units = ["B", "KB", "MB", "GB", "TB"]
+        idx = 0
+        while val >= 1024 and idx < len(units) - 1:
+            val /= 1024.0
+            idx += 1
+        return f"{val:.2f} {units[idx]}"
+
+    @classmethod
+    def _torch_module_memory(cls, module: Any) -> Dict[str, Any] | None:
+        if module is None:
+            return None
+        by_device: Dict[str, int] = {}
+        tensors: List[torch.Tensor] = []
+        try:
+            tensors.extend(list(module.parameters()))
+        except Exception:
+            pass
+        try:
+            tensors.extend(list(module.buffers()))
+        except Exception:
+            pass
+        for tensor in tensors:
+            if tensor is None:
+                continue
+            try:
+                numel = tensor.numel()
+                elem_size = tensor.element_size()
+                bytes_used = int(numel * elem_size)
+            except Exception:
+                continue
+            device = str(getattr(tensor, "device", "cpu"))
+            if device.startswith("cuda"):
+                device_key = "cuda"
+            elif device.startswith("cpu"):
+                device_key = "cpu"
+            else:
+                device_key = device
+            by_device[device_key] = by_device.get(device_key, 0) + bytes_used
+        total = int(sum(by_device.values()))
+        human_by_device = {k: cls._human_bytes(v) for k, v in by_device.items()}
+        return {
+            "bytes_by_device": by_device,
+            "bytes_total": total,
+            "human_by_device": human_by_device,
+            "human_total": cls._human_bytes(total),
+        }
+
+    def _collect_loaded_model_stats(self) -> Dict[str, Any]:
+        loaded: Dict[str, Any] = {}
+
+        embed_backend = (
+            "lm_studio"
+            if self.use_lm_studio_embeddings and self._lm_client is not None
+            else "local"
+        )
+        embed_model_obj = self._embed_model if embed_backend == "local" else None
+        loaded["embedding"] = {
+            "name": self.embedding_model_name,
+            "backend": embed_backend,
+            "loaded": bool(embed_model_obj) if embed_backend == "local" else None,
+            "device": self.device if embed_backend == "local" else None,
+            "memory": self._torch_module_memory(embed_model_obj),
+            "note": None if embed_backend == "local" else "remote_backend",
+        }
+
+        rerank_backend = (
+            "lm_studio"
+            if self.use_lm_studio_rerank and self._lm_client is not None
+            else "local"
+        )
+        rerank_model_obj = self._rerank_model if rerank_backend == "local" else None
+        loaded["reranker"] = {
+            "name": self.reranker_model_name,
+            "backend": rerank_backend,
+            "loaded": bool(rerank_model_obj) if rerank_backend == "local" else None,
+            "device": self.device if rerank_backend == "local" else None,
+            "memory": self._torch_module_memory(rerank_model_obj),
+            "note": None if rerank_backend == "local" else "remote_backend",
+        }
+
+        chat_backend = (
+            "lm_studio"
+            if self.use_lm_studio_chat and self._lm_client is not None
+            else "local"
+        )
+        chat_model_obj = None
+        chat_loaded_name = self.chat_model_name
+        if self._chat_backend is not None:
+            chat_loaded_name = self._chat_backend._loaded_model_name or chat_loaded_name
+            if chat_backend == "local":
+                chat_model_obj = getattr(self._chat_backend, "_model", None)
+        loaded["chat"] = {
+            "name": chat_loaded_name,
+            "backend": chat_backend,
+            "loaded": bool(chat_model_obj) if chat_backend == "local" else None,
+            "device": self.device if chat_backend == "local" else None,
+            "memory": self._torch_module_memory(chat_model_obj),
+            "note": None if chat_backend == "local" else "remote_backend",
+        }
+
+        return loaded
+
+    @classmethod
+    def _aggregate_model_memory(cls, loaded_models: Dict[str, Any]) -> Dict[str, Any]:
+        total_by_device: Dict[str, int] = {}
+        for _, info in (loaded_models or {}).items():
+            memory = info.get("memory") if isinstance(info, dict) else None
+            if not isinstance(memory, dict):
+                continue
+            by_device = memory.get("bytes_by_device")
+            if not isinstance(by_device, dict):
+                continue
+            for device, val in by_device.items():
+                try:
+                    bytes_used = int(val)
+                except Exception:
+                    continue
+                total_by_device[device] = total_by_device.get(device, 0) + bytes_used
+        total = int(sum(total_by_device.values()))
+        return {
+            "bytes_by_device": total_by_device,
+            "bytes_total": total,
+            "human_by_device": {k: cls._human_bytes(v) for k, v in total_by_device.items()},
+            "human_total": cls._human_bytes(total),
+        }
+
+    def _touch_model(self, key: str) -> None:
+        try:
+            self._model_last_used[str(key)] = time.time()
+        except Exception:
+            return
+
+    def request_started(self) -> None:
+        with self._active_lock:
+            self._active_requests += 1
+
+    def request_finished(self) -> None:
+        with self._active_lock:
+            self._active_requests = max(0, self._active_requests - 1)
+
+    def _can_release_gpu(self) -> bool:
+        with self._active_lock:
+            return self._active_requests <= 0
+
+    def _unload_embed_model(self) -> bool:
+        if self._embed_model is None and self._embed_tokenizer is None:
+            return False
+        self._embed_model = None
+        self._embed_tokenizer = None
+        return True
+
+    def _unload_rerank_model(self) -> bool:
+        if self._rerank_model is None and self._rerank_tokenizer is None:
+            return False
+        self._rerank_model = None
+        self._rerank_tokenizer = None
+        return True
+
+    def _unload_chat_model(self) -> bool:
+        if self._chat_backend is None:
+            return False
+        try:
+            return bool(self._chat_backend.unload())
+        except Exception:
+            return False
+
+    def _release_gpu_cache(self) -> None:
+        if not torch.cuda.is_available():
+            return
+        try:
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
+    def release_idle_gpu(self) -> None:
+        if not torch.cuda.is_available():
+            return
+        if not self._can_release_gpu():
+            return
+        if self.release_gpu_cache:
+            self._release_gpu_cache()
+        idle_seconds = int(self.unload_models_idle_seconds or 0)
+        if idle_seconds <= 0:
+            return
+        now = time.time()
+        unloaded = False
+        last_embed = self._model_last_used.get("embedding")
+        if (
+            self._embed_model is not None
+            and not self.use_lm_studio_embeddings
+            and last_embed is not None
+            and (now - last_embed) >= idle_seconds
+        ):
+            unloaded = self._unload_embed_model() or unloaded
+        last_rerank = self._model_last_used.get("reranker")
+        if (
+            self._rerank_model is not None
+            and not self.use_lm_studio_rerank
+            and last_rerank is not None
+            and (now - last_rerank) >= idle_seconds
+        ):
+            unloaded = self._unload_rerank_model() or unloaded
+        last_chat = self._model_last_used.get("chat")
+        if (
+            not self.use_lm_studio_chat
+            and last_chat is not None
+            and (now - last_chat) >= idle_seconds
+        ):
+            unloaded = self._unload_chat_model() or unloaded
+        if unloaded:
+            self._release_gpu_cache()
+
+    @classmethod
+    def _collect_process_memory(cls) -> Dict[str, Any] | None:
+        try:
+            import psutil  # type: ignore
+        except Exception:
+            psutil = None
+
+        if psutil is not None:
+            try:
+                proc = psutil.Process(os.getpid())
+                info = proc.memory_info()
+                full = None
+                try:
+                    full = proc.memory_full_info()
+                except Exception:
+                    full = None
+                return {
+                    "rss_bytes": int(getattr(info, "rss", 0)),
+                    "vms_bytes": int(getattr(info, "vms", 0)),
+                    "shared_bytes": int(getattr(info, "shared", 0)),
+                    "text_bytes": int(getattr(info, "text", 0)),
+                    "data_bytes": int(getattr(info, "data", 0)),
+                    "dirty_bytes": int(getattr(info, "dirty", 0)),
+                    "uss_bytes": int(getattr(full, "uss", 0)) if full is not None else None,
+                    "pss_bytes": int(getattr(full, "pss", 0)) if full is not None else None,
+                    "human_rss": cls._human_bytes(getattr(info, "rss", None)),
+                    "human_vms": cls._human_bytes(getattr(info, "vms", None)),
+                }
+            except Exception:
+                return None
+
+        if os.name == "nt":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+                    _fields_ = [
+                        ("cb", wintypes.DWORD),
+                        ("PageFaultCount", wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t),
+                        ("PrivateUsage", ctypes.c_size_t),
+                    ]
+
+                counters = PROCESS_MEMORY_COUNTERS_EX()
+                counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS_EX)
+                GetProcessMemoryInfo = ctypes.windll.psapi.GetProcessMemoryInfo
+                GetCurrentProcess = ctypes.windll.kernel32.GetCurrentProcess
+                handle = GetCurrentProcess()
+                if not GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                    return None
+
+                return {
+                    "working_set_bytes": int(counters.WorkingSetSize),
+                    "peak_working_set_bytes": int(counters.PeakWorkingSetSize),
+                    "pagefile_bytes": int(counters.PagefileUsage),
+                    "peak_pagefile_bytes": int(counters.PeakPagefileUsage),
+                    "private_bytes": int(counters.PrivateUsage),
+                    "human_working_set": cls._human_bytes(counters.WorkingSetSize),
+                    "human_private": cls._human_bytes(counters.PrivateUsage),
+                }
+            except Exception:
+                return None
+
+        try:
+            import resource
+
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            rss_kb = getattr(usage, "ru_maxrss", 0)
+            rss_bytes = int(rss_kb) * 1024
+            return {
+                "max_rss_bytes": rss_bytes,
+                "human_max_rss": cls._human_bytes(rss_bytes),
+                "note": "ru_maxrss_only",
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _collect_gpu_memory() -> Dict[str, Any] | None:
+        if not torch.cuda.is_available():
+            return None
+        devices: List[Dict[str, Any]] = []
+        try:
+            count = torch.cuda.device_count()
+        except Exception:
+            count = 0
+        for idx in range(count):
+            try:
+                props = torch.cuda.get_device_properties(idx)
+                free_bytes, total_bytes = torch.cuda.mem_get_info(idx)
+                allocated = torch.cuda.memory_allocated(idx)
+                reserved = torch.cuda.memory_reserved(idx)
+                max_alloc = torch.cuda.max_memory_allocated(idx)
+                max_reserved = torch.cuda.max_memory_reserved(idx)
+            except Exception:
+                continue
+            devices.append(
+                {
+                    "index": idx,
+                    "name": getattr(props, "name", None),
+                    "total_bytes": int(total_bytes),
+                    "free_bytes": int(free_bytes),
+                    "allocated_bytes": int(allocated),
+                    "reserved_bytes": int(reserved),
+                    "max_allocated_bytes": int(max_alloc),
+                    "max_reserved_bytes": int(max_reserved),
+                    "human_total": KnowledgeBase._human_bytes(total_bytes),
+                    "human_free": KnowledgeBase._human_bytes(free_bytes),
+                    "human_allocated": KnowledgeBase._human_bytes(allocated),
+                    "human_reserved": KnowledgeBase._human_bytes(reserved),
+                }
+            )
+        return {"device_count": len(devices), "devices": devices}
+
+    @classmethod
+    def _collect_system_usage(cls) -> Dict[str, Any] | None:
+        try:
+            import psutil  # type: ignore
+        except Exception:
+            return None
+
+        try:
+            cpu_percent = float(psutil.cpu_percent(interval=0.1))
+        except Exception:
+            cpu_percent = None
+
+        try:
+            cpu_count = int(psutil.cpu_count(logical=True) or 0)
+        except Exception:
+            cpu_count = None
+
+        vm = None
+        try:
+            vm = psutil.virtual_memory()
+        except Exception:
+            vm = None
+
+        swap = None
+        try:
+            swap = psutil.swap_memory()
+        except Exception:
+            swap = None
+
+        load_avg = None
+        try:
+            load_avg = os.getloadavg()
+        except Exception:
+            load_avg = None
+
+        result: Dict[str, Any] = {
+            "cpu_percent": cpu_percent,
+            "cpu_count": cpu_count,
+            "load_avg": load_avg,
+        }
+        if vm is not None:
+            result["memory"] = {
+                "total_bytes": int(getattr(vm, "total", 0)),
+                "available_bytes": int(getattr(vm, "available", 0)),
+                "used_bytes": int(getattr(vm, "used", 0)),
+                "free_bytes": int(getattr(vm, "free", 0)),
+                "percent": float(getattr(vm, "percent", 0.0)),
+                "human_total": cls._human_bytes(getattr(vm, "total", None)),
+                "human_used": cls._human_bytes(getattr(vm, "used", None)),
+                "human_available": cls._human_bytes(getattr(vm, "available", None)),
+            }
+        if swap is not None:
+            result["swap"] = {
+                "total_bytes": int(getattr(swap, "total", 0)),
+                "used_bytes": int(getattr(swap, "used", 0)),
+                "free_bytes": int(getattr(swap, "free", 0)),
+                "percent": float(getattr(swap, "percent", 0.0)),
+                "human_total": cls._human_bytes(getattr(swap, "total", None)),
+                "human_used": cls._human_bytes(getattr(swap, "used", None)),
+            }
+        return result
+
+    @classmethod
+    def _collect_gpu_usage(cls) -> Dict[str, Any] | None:
+        try:
+            import pynvml  # type: ignore
+        except Exception:
+            return None
+
+        try:
+            pynvml.nvmlInit()
+        except Exception:
+            return None
+
+        devices: List[Dict[str, Any]] = []
+        total_gpu_mem = 0
+        try:
+            count = int(pynvml.nvmlDeviceGetCount())
+        except Exception:
+            count = 0
+
+        for idx in range(count):
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
+                name = pynvml.nvmlDeviceGetName(handle)
+                if isinstance(name, bytes):
+                    name = name.decode("utf-8", errors="ignore")
+                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                total_gpu_mem += int(getattr(mem, "total", 0))
+                util_map: Dict[int, Dict[str, float]] = {}
+                if hasattr(pynvml, "nvmlDeviceGetProcessUtilization"):
+                    try:
+                        samples = pynvml.nvmlDeviceGetProcessUtilization(handle, 0)
+                    except Exception:
+                        samples = []
+                    for sample in samples or []:
+                        try:
+                            pid = int(getattr(sample, "pid", 0))
+                        except Exception:
+                            continue
+                        if pid <= 0:
+                            continue
+                        try:
+                            sm_util = float(getattr(sample, "smUtil", 0.0))
+                        except Exception:
+                            sm_util = 0.0
+                        try:
+                            mem_util = float(getattr(sample, "memUtil", 0.0))
+                        except Exception:
+                            mem_util = 0.0
+                        util_map[pid] = {
+                            "gpu_util_percent": sm_util,
+                            "mem_util_percent": mem_util,
+                        }
+
+                procs = []
+                try:
+                    proc_infos = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+                except Exception:
+                    proc_infos = []
+                for p in proc_infos or []:
+                    try:
+                        used = int(getattr(p, "usedGpuMemory", 0))
+                    except Exception:
+                        used = 0
+                    pid = int(getattr(p, "pid", 0))
+                    util = util_map.get(pid, {})
+                    procs.append(
+                        {
+                            "pid": pid,
+                            "used_memory_bytes": used,
+                            "human_used_memory": cls._human_bytes(used),
+                            "gpu_util_percent": util.get("gpu_util_percent"),
+                            "gpu_mem_util_percent": util.get("mem_util_percent"),
+                        }
+                    )
+                devices.append(
+                    {
+                        "index": idx,
+                        "name": name,
+                        "utilization_gpu_percent": float(getattr(util, "gpu", 0.0)),
+                        "utilization_memory_percent": float(getattr(util, "memory", 0.0)),
+                        "memory_total_bytes": int(getattr(mem, "total", 0)),
+                        "memory_used_bytes": int(getattr(mem, "used", 0)),
+                        "memory_free_bytes": int(getattr(mem, "free", 0)),
+                        "human_memory_total": cls._human_bytes(getattr(mem, "total", None)),
+                        "human_memory_used": cls._human_bytes(getattr(mem, "used", None)),
+                        "human_memory_free": cls._human_bytes(getattr(mem, "free", None)),
+                        "processes": procs,
+                        "process_utilization_available": bool(util_map),
+                    }
+                )
+            except Exception:
+                continue
+
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+
+        return {
+            "device_count": len(devices),
+            "devices": devices,
+            "total_memory_bytes": total_gpu_mem,
+            "human_total_memory": cls._human_bytes(total_gpu_mem),
+        }
+
+    @classmethod
+    def _collect_process_usage(cls, gpu_usage: Dict[str, Any] | None = None) -> List[Dict[str, Any]] | None:
+        try:
+            import psutil  # type: ignore
+        except Exception:
+            return None
+
+        allowed_pids: set[int] | None = None
+        try:
+            current = psutil.Process(os.getpid())
+            allowed_pids = {int(current.pid)}
+            try:
+                for child in current.children(recursive=True):
+                    try:
+                        allowed_pids.add(int(child.pid))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        except Exception:
+            allowed_pids = None
+
+        gpu_proc_map: Dict[int, int] = {}
+        gpu_util_map: Dict[int, float] = {}
+        gpu_mem_util_map: Dict[int, float] = {}
+        gpu_total = 0
+        if gpu_usage and isinstance(gpu_usage.get("devices"), list):
+            for dev in gpu_usage["devices"]:
+                try:
+                    gpu_total += int(dev.get("memory_total_bytes") or 0)
+                except Exception:
+                    pass
+                for proc in dev.get("processes", []) or []:
+                    try:
+                        pid = int(proc.get("pid"))
+                        used = int(proc.get("used_memory_bytes") or 0)
+                    except Exception:
+                        continue
+                    gpu_proc_map[pid] = gpu_proc_map.get(pid, 0) + used
+                    try:
+                        util = float(proc.get("gpu_util_percent")) if proc.get("gpu_util_percent") is not None else None
+                    except Exception:
+                        util = None
+                    if util is not None:
+                        gpu_util_map[pid] = max(util, gpu_util_map.get(pid, 0.0))
+                    try:
+                        mem_util = float(proc.get("gpu_mem_util_percent")) if proc.get("gpu_mem_util_percent") is not None else None
+                    except Exception:
+                        mem_util = None
+                    if mem_util is not None:
+                        gpu_mem_util_map[pid] = max(mem_util, gpu_mem_util_map.get(pid, 0.0))
+
+        processes: List[Dict[str, Any]] = []
+        for proc in psutil.process_iter(["pid", "name", "username", "status"]):
+            try:
+                pid = proc.info.get("pid")
+                if allowed_pids is not None and (pid is None or int(pid) not in allowed_pids):
+                    continue
+                name = proc.info.get("name")
+                username = proc.info.get("username")
+                status = proc.info.get("status")
+                cpu_percent = proc.cpu_percent(interval=None)
+                mem_percent = proc.memory_percent()
+                mem_info = proc.memory_info()
+                rss = int(getattr(mem_info, "rss", 0))
+                vms = int(getattr(mem_info, "vms", 0))
+            except Exception:
+                continue
+
+            gpu_used = gpu_proc_map.get(int(pid), 0) if pid is not None else 0
+            gpu_percent = None
+            if gpu_total > 0 and gpu_used > 0:
+                gpu_percent = round(gpu_used / gpu_total * 100.0, 4)
+
+            processes.append(
+                {
+                    "pid": int(pid) if pid is not None else None,
+                    "name": name,
+                    "username": username,
+                    "status": status,
+                    "cpu_percent": float(cpu_percent) if cpu_percent is not None else None,
+                    "memory_percent": float(mem_percent) if mem_percent is not None else None,
+                    "memory_rss_bytes": rss,
+                    "memory_vms_bytes": vms,
+                    "human_memory_rss": cls._human_bytes(rss),
+                    "human_memory_vms": cls._human_bytes(vms),
+                    "gpu_memory_bytes": gpu_used,
+                    "human_gpu_memory": cls._human_bytes(gpu_used),
+                    "gpu_memory_percent": gpu_percent,
+                    "gpu_util_percent": gpu_util_map.get(int(pid)) if pid is not None else None,
+                    "gpu_mem_util_percent": gpu_mem_util_map.get(int(pid)) if pid is not None else None,
+                }
+            )
+
+        processes.sort(
+            key=lambda p: (
+                -(p.get("cpu_percent") or 0.0),
+                -(p.get("memory_rss_bytes") or 0),
+            )
+        )
+        return processes[:50]
 
     def warmup_models(
         self, load_embedding: bool = True, load_reranker: bool = True

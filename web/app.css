@@ -793,6 +793,67 @@ input.size-small {
   font-size: 0.92rem;
 }
 
+.stats-output {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stats-modal-content {
+  width: 70%;
+  max-width: 70vw !important;
+}
+
+.stats-modal-body {
+  padding: 20px 24px 24px;
+  max-height: calc(90vh - 80px);
+  overflow: auto;
+}
+
+.stats-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.stats-section h4 {
+  margin: 0 0 8px;
+  font-size: 0.98rem;
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.stats-table-full {
+  width: 100%;
+}
+
+.stats-grid .stats-section {
+  grid-column: 1 / -1;
+}
+
 .chunks-head {
   display: flex;
   align-items: center;

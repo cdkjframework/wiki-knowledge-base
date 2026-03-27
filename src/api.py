@@ -224,6 +224,24 @@ class KnowledgeBaseApi:
             return None
         return value if value > 0 else None
 
+    def maybe_release_gpu(self) -> None:
+        try:
+            self.kb.release_idle_gpu()
+        except Exception:
+            return
+
+    def request_started(self) -> None:
+        try:
+            self.kb.request_started()
+        except Exception:
+            return
+
+    def request_finished(self) -> None:
+        try:
+            self.kb.request_finished()
+        except Exception:
+            return
+
     def _normalize_max_tokens_for_provider(
         self,
         provider: str | None,
@@ -2044,6 +2062,7 @@ class HttpApiServer:
 
             def do_GET(self):  # noqa: N802
                 try:
+                    api.request_started()
                     path = self._path()
                     if path in {"/", "/ui", "/ui/"}:
                         if self._serve_static(WEB_DIR, "index.html"):
@@ -2438,9 +2457,13 @@ class HttpApiServer:
                     self._not_found()
                 except Exception as exc:
                     self._internal_error(exc)
+                finally:
+                    api.request_finished()
+                    api.maybe_release_gpu()
 
             def do_POST(self):  # noqa: N802
                 try:
+                    api.request_started()
                     path = self._path()
                     if path == "/kb/file":
                         content_type = self.headers.get("Content-Type", "")
@@ -2786,9 +2809,13 @@ class HttpApiServer:
                     self._bad_request(str(exc))
                 except Exception as exc:
                     self._internal_error(exc)
+                finally:
+                    api.request_finished()
+                    api.maybe_release_gpu()
 
             def do_PUT(self):  # noqa: N802
                 try:
+                    api.request_started()
                     path = self._path()
                     if path.startswith("/kb/chunk/"):
                         chunk_id_raw = unquote(path[len("/kb/chunk/") :]).strip()
@@ -2841,9 +2868,13 @@ class HttpApiServer:
                     self._bad_request(str(exc))
                 except Exception as exc:
                     self._internal_error(exc)
+                finally:
+                    api.request_finished()
+                    api.maybe_release_gpu()
 
             def do_DELETE(self):  # noqa: N802
                 try:
+                    api.request_started()
                     path = self._path()
                     if path == "/kb":
                         self._ok(api.clear_knowledge_base())
@@ -2923,6 +2954,9 @@ class HttpApiServer:
                     self._not_found()
                 except Exception as exc:
                     self._internal_error(exc)
+                finally:
+                    api.request_finished()
+                    api.maybe_release_gpu()
 
         return Handler
 

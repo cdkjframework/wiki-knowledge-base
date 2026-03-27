@@ -158,6 +158,14 @@ class ChatModel:
         self._loaded_model_name = model_name
         logger.info("Local chat model loaded: %s", model_name)
 
+    def unload(self) -> bool:
+        if self._model is None and self._tokenizer is None:
+            return False
+        self._model = None
+        self._tokenizer = None
+        self._loaded_model_name = None
+        return True
+
     def _local_chat_once(
         self,
         messages: Sequence[Dict[str, Any]],

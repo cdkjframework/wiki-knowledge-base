@@ -4,8 +4,8 @@
 #   pip install -r requirements.optional-parser.txt
 
 # Keep aligned with current optional parser runtime baseline
-torch==2.10.0
-torchvision==0.25.0
+torch==2.5.1
+torchvision==0.20.1
 transformers==4.57.6
 tokenizers==0.22.2
 huggingface_hub==0.36.2
@@ -23,3 +23,5 @@ litellm==1.82.5
 # This conflicts with litellm/openai 2.x in the main project environment.
 # If you need marker-pdf, prefer a separate virtual environment.
 # marker-pdf==1.10.2
+
+

@@ -125,6 +125,27 @@ function Copy-IfExists {
     }
 }
 
+function Normalize-RequirementsEncoding {
+    param([string]$Root)
+
+    $files = @(
+        "requirements.txt",
+        "requirements.build.txt",
+        "requirements.optional-parser.txt"
+    )
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    foreach ($file in $files) {
+        $path = Join-Path $Root $file
+        if (-not (Test-Path $path)) {
+            continue
+        }
+
+        $content = Get-Content -Raw -LiteralPath $path
+        [System.IO.File]::WriteAllText($path, $content, $utf8NoBom)
+    }
+}
+
 function New-TarGzArchive {
     param(
         [string]$SourceDirectory,
@@ -324,6 +345,66 @@ function Ensure-NumpyCompat {
     }
 }
 
+function Get-RequirementPinnedVersion {
+    param(
+        [string]$FilePath,
+        [string]$PackageName
+    )
+
+    if (-not (Test-Path $FilePath)) {
+        return $null
+    }
+
+    $pattern = "^(?i)" + [regex]::Escape($PackageName) + "\s*==\s*([^\s;#]+)"
+    foreach ($line in Get-Content $FilePath) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
+            continue
+        }
+
+        $trimmed = $trimmed -replace "\s+#.*$", ""
+        $m = [regex]::Match($trimmed, $pattern)
+        if ($m.Success) {
+            return $m.Groups[1].Value
+        }
+    }
+
+    return $null
+}
+
+function Get-InstalledPackageVersion {
+    param(
+        [string]$PythonCmd,
+        [string]$PackageName
+    )
+
+    try {
+        $ver = & $PythonCmd -c "import importlib.metadata as m; print(m.version('$PackageName'))" 2>$null
+        if (-not [string]::IsNullOrWhiteSpace($ver)) {
+            return $ver.Trim()
+        }
+    } catch {}
+
+    return $null
+}
+
+function Add-LocalVersionSuffix {
+    param(
+        [string]$Version,
+        [string]$Suffix
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        return $null
+    }
+
+    if ($Version -match "\+") {
+        return $Version
+    }
+
+    return "$Version+$Suffix"
+}
+
 $ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptPath
 
@@ -349,6 +430,33 @@ if ($LASTEXITCODE -ne 0) {
     throw "pip install -r requirements.txt failed"
 }
 
+$requirementsPath = Join-Path $ScriptPath "requirements.txt"
+$torchVersion = Get-RequirementPinnedVersion -FilePath $requirementsPath -PackageName "torch"
+$torchvisionVersion = Get-RequirementPinnedVersion -FilePath $requirementsPath -PackageName "torchvision"
+
+if (-not $torchVersion) {
+    $torchVersion = Get-InstalledPackageVersion -PythonCmd $PythonCmd -PackageName "torch"
+    if ($torchVersion) {
+        Write-Host "[!] torch pin not found in requirements.txt; using installed torch $torchVersion" -ForegroundColor Yellow
+    } else {
+        Write-Host "[!] torch pin not found in requirements.txt; skipping CUDA/ROCm torch override" -ForegroundColor Yellow
+    }
+}
+
+if (-not $torchvisionVersion) {
+    $torchvisionVersion = Get-InstalledPackageVersion -PythonCmd $PythonCmd -PackageName "torchvision"
+    if ($torchvisionVersion) {
+        Write-Host "[!] torchvision pin not found in requirements.txt; using installed torchvision $torchvisionVersion" -ForegroundColor Yellow
+    } else {
+        Write-Host "[!] torchvision pin not found in requirements.txt; CUDA/ROCm torchvision override may be skipped" -ForegroundColor Yellow
+    }
+}
+
+$cudaTorchVersion = Add-LocalVersionSuffix -Version $torchVersion -Suffix "cu121"
+$cudaTorchvisionVersion = Add-LocalVersionSuffix -Version $torchvisionVersion -Suffix "cu121"
+$rocmTorchVersion = Add-LocalVersionSuffix -Version $torchVersion -Suffix "rocm6.0"
+$rocmTorchvisionVersion = Add-LocalVersionSuffix -Version $torchvisionVersion -Suffix "rocm6.0"
+
 if (-not $SkipCudaTorch) {
     $hasNvidia = $false
     $hasAmd = $false
@@ -360,20 +468,48 @@ if (-not $SkipCudaTorch) {
     } catch {}
 
     if ($hasNvidia) {
-        Write-Host "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121)..." -ForegroundColor Cyan
-        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[!] CUDA torch install failed, keep current torch package" -ForegroundColor Yellow
+        if ($cudaTorchVersion) {
+            Write-Host "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121) for torch==$cudaTorchVersion..." -ForegroundColor Cyan
+            pip install --force-reinstall --no-deps torch==$cudaTorchVersion --index-url https://download.pytorch.org/whl/cu121
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[!] CUDA torch install failed, keep current torch package" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "[!] torch version not resolved; skipping CUDA torch override" -ForegroundColor Yellow
+        }
+
+        if ($cudaTorchvisionVersion) {
+            Write-Host "[*] Installing CUDA torchvision wheel (cu121) for torchvision==$cudaTorchvisionVersion..." -ForegroundColor Cyan
+            pip install --force-reinstall --no-deps torchvision==$cudaTorchvisionVersion --index-url https://download.pytorch.org/whl/cu121
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[!] CUDA torchvision install failed, keep current torchvision package" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "[!] torchvision version not resolved; skipping CUDA torchvision override" -ForegroundColor Yellow
         }
 
         if (-not $ForceCustomFaissWheel -and [string]::IsNullOrWhiteSpace($CustomFaissWheel)) {
             Write-Host "[!] PyPI does not provide a matching faiss-gpu wheel here; use -CustomFaissWheel or -ForceCustomFaissWheel to install a local GPU build." -ForegroundColor Yellow
         }
     } elseif ($hasAmd) {
-        Write-Host "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0)..." -ForegroundColor Cyan
-        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[!] ROCm torch install failed, keep current torch package" -ForegroundColor Yellow
+        if ($rocmTorchVersion) {
+            Write-Host "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0) for torch==$rocmTorchVersion..." -ForegroundColor Cyan
+            pip install --force-reinstall --no-deps torch==$rocmTorchVersion --index-url https://download.pytorch.org/whl/rocm6.0
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[!] ROCm torch install failed, keep current torch package" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "[!] torch version not resolved; skipping ROCm torch override" -ForegroundColor Yellow
+        }
+
+        if ($rocmTorchvisionVersion) {
+            Write-Host "[*] Installing ROCm torchvision wheel (rocm6.0) for torchvision==$rocmTorchvisionVersion..." -ForegroundColor Cyan
+            pip install --force-reinstall --no-deps torchvision==$rocmTorchvisionVersion --index-url https://download.pytorch.org/whl/rocm6.0
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[!] ROCm torchvision install failed, keep current torchvision package" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "[!] torchvision version not resolved; skipping ROCm torchvision override" -ForegroundColor Yellow
         }
 
         if (-not $ForceCustomFaissWheel -and [string]::IsNullOrWhiteSpace($CustomFaissWheel)) {
@@ -750,6 +886,59 @@ echo "[*] Installing dependencies..."
 unset PIP_REQUIRE_HASHES || true
 pip install -r requirements.txt
 
+get_requirement_version() {
+    local name="$1"
+    local file="$2"
+    [[ -f "$file" ]] || return 1
+    local line
+    line="$(grep -i -E "^[[:space:]]*${name}[[:space:]]*==[[:space:]]*[^#;[:space:]]+" "$file" | head -n 1 || true)"
+    [[ -z "$line" ]] && return 1
+    line="${line%%#*}"
+    line="${line%%;*}"
+    echo "$line" | sed -E "s/^[[:space:]]*${name}[[:space:]]*==[[:space:]]*//I"
+}
+
+get_installed_version() {
+    local name="$1"
+    "$PYTHON_CMD" -c "import importlib.metadata as m; print(m.version('$name'))" 2>/dev/null || true
+}
+
+add_local_version() {
+    local version="$1"
+    local suffix="$2"
+    [[ -z "$version" ]] && return 1
+    if [[ "$version" == *"+"* ]]; then
+        echo "$version"
+        return 0
+    fi
+    echo "${version}+${suffix}"
+}
+
+torch_version="$(get_requirement_version torch "$SCRIPT_DIR/requirements.txt" || true)"
+torchvision_version="$(get_requirement_version torchvision "$SCRIPT_DIR/requirements.txt" || true)"
+if [[ -z "$torch_version" ]]; then
+    torch_version="$(get_installed_version torch)"
+    if [[ -n "$torch_version" ]]; then
+        echo "[!] torch pin not found in requirements.txt; using installed torch $torch_version"
+    else
+        echo "[!] torch pin not found in requirements.txt; skipping CUDA/ROCm torch override"
+    fi
+fi
+
+if [[ -z "$torchvision_version" ]]; then
+    torchvision_version="$(get_installed_version torchvision)"
+    if [[ -n "$torchvision_version" ]]; then
+        echo "[!] torchvision pin not found in requirements.txt; using installed torchvision $torchvision_version"
+    else
+        echo "[!] torchvision pin not found in requirements.txt; CUDA/ROCm torchvision override may be skipped"
+    fi
+fi
+
+cuda_torch_version="$(add_local_version "$torch_version" "cu121" || true)"
+cuda_torchvision_version="$(add_local_version "$torchvision_version" "cu121" || true)"
+rocm_torch_version="$(add_local_version "$torch_version" "rocm6.0" || true)"
+rocm_torchvision_version="$(add_local_version "$torchvision_version" "rocm6.0" || true)"
+
 has_nvidia=0
 has_amd=0
 command -v nvidia-smi >/dev/null 2>&1 && has_nvidia=1 || true
@@ -757,17 +946,41 @@ command -v rocm-smi  >/dev/null 2>&1 && has_amd=1  || true
 
 if [[ $SKIP_CUDA_TORCH -eq 0 ]]; then
     if [[ $has_nvidia -eq 1 ]]; then
-        echo "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121)..."
-        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121 || \
-            echo "[!] CUDA torch install failed, keep current torch package"
+        if [[ -n "$cuda_torch_version" ]]; then
+            echo "[*] NVIDIA GPU detected, installing CUDA torch wheel (cu121) for torch==$cuda_torch_version..."
+            pip install --force-reinstall --no-deps "torch==${cuda_torch_version}" --index-url https://download.pytorch.org/whl/cu121 || \
+                echo "[!] CUDA torch install failed, keep current torch package"
+        else
+            echo "[!] torch version not resolved; skipping CUDA torch override"
+        fi
+
+        if [[ -n "$cuda_torchvision_version" ]]; then
+            echo "[*] Installing CUDA torchvision wheel (cu121) for torchvision==$cuda_torchvision_version..."
+            pip install --force-reinstall --no-deps "torchvision==${cuda_torchvision_version}" --index-url https://download.pytorch.org/whl/cu121 || \
+                echo "[!] CUDA torchvision install failed, keep current torchvision package"
+        else
+            echo "[!] torchvision version not resolved; skipping CUDA torchvision override"
+        fi
 
         if [[ $FORCE_CUSTOM_FAISS_WHEEL -eq 0 && -z "$CUSTOM_FAISS_WHEEL" ]]; then
             echo "[!] PyPI does not provide a matching faiss-gpu wheel here; use --custom-faiss-wheel or --force-custom-faiss-wheel to install a local GPU build."
         fi
     elif [[ $has_amd -eq 1 ]]; then
-        echo "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0)..."
-        pip install --force-reinstall --no-deps torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0 || \
-            echo "[!] ROCm torch install failed, keep current torch package"
+        if [[ -n "$rocm_torch_version" ]]; then
+            echo "[*] AMD GPU detected, installing ROCm torch wheel (rocm6.0) for torch==$rocm_torch_version..."
+            pip install --force-reinstall --no-deps "torch==${rocm_torch_version}" --index-url https://download.pytorch.org/whl/rocm6.0 || \
+                echo "[!] ROCm torch install failed, keep current torch package"
+        else
+            echo "[!] torch version not resolved; skipping ROCm torch override"
+        fi
+
+        if [[ -n "$rocm_torchvision_version" ]]; then
+            echo "[*] Installing ROCm torchvision wheel (rocm6.0) for torchvision==$rocm_torchvision_version..."
+            pip install --force-reinstall --no-deps "torchvision==${rocm_torchvision_version}" --index-url https://download.pytorch.org/whl/rocm6.0 || \
+                echo "[!] ROCm torchvision install failed, keep current torchvision package"
+        else
+            echo "[!] torchvision version not resolved; skipping ROCm torchvision override"
+        fi
 
         if [[ $FORCE_CUSTOM_FAISS_WHEEL -eq 0 && -z "$CUSTOM_FAISS_WHEEL" ]]; then
             echo "[!] No custom ROCm FAISS wheel was provided, using faiss-cpu"
@@ -937,6 +1150,8 @@ try {
 
     Write-Info "Project root: $ProjectRoot"
     Write-Info "Python executable: $PythonExe"
+    Write-Info "Normalizing requirements encoding (UTF-8 without BOM)..."
+    Normalize-RequirementsEncoding -Root $ProjectRoot
 
     if ($Clean) {
         Write-Info "Cleaning output directory..."

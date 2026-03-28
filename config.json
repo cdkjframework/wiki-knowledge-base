@@ -16,7 +16,7 @@
     "auto_create_database": false,
     "table": "kb_session_messages",
     "mysql": {
-      "host": "10.6.2.10",
+      "host": "10.6.2.8",
       "port": 3306,
       "user": "root",
       "password": "I5*Z70in82WVfDYU",
@@ -39,7 +39,7 @@
       "host": "10.6.2.8",
       "port": 6379,
       "database": 10,
-      "password": ""
+      "password": "123456"
     }
   },
   "knowledge_base": {

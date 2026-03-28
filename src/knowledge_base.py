@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import threading
 import warnings
@@ -2205,17 +2206,92 @@ class KnowledgeBase:
         if len(text) <= self.chunk_size:
             return [text]
 
-        chunks = []
-        step = max(1, self.chunk_size - self.chunk_overlap)
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        paragraphs = [p.strip() for p in re.split(r"\n\\s*\n", normalized) if p.strip()]
+        if len(paragraphs) <= 1:
+            lines = [l.strip() for l in normalized.split("\n") if l.strip()]
+            if len(lines) > 1:
+                paragraphs = lines
+
+        segments: List[str] = []
+        for para in paragraphs:
+            if len(para) <= self.chunk_size:
+                segments.append(para)
+                continue
+            sentences = self._split_sentences(para)
+            if not sentences:
+                segments.extend(self._split_by_length(para))
+                continue
+            for sent in sentences:
+                if len(sent) <= self.chunk_size:
+                    segments.append(sent)
+                else:
+                    segments.extend(self._split_by_length(sent))
+
+        chunks: List[str] = []
+        current = ""
+        for seg in segments:
+            if not seg:
+                continue
+            if not current:
+                current = seg
+                continue
+            if len(current) + 1 + len(seg) <= self.chunk_size:
+                current = f"{current}\n{seg}"
+                continue
+            chunks.append(current.strip())
+            overlap_text = ""
+            if self.chunk_overlap > 0:
+                overlap_text = current[-self.chunk_overlap :]
+                overlap_text = self._trim_overlap_to_boundary(overlap_text)
+            current = f"{overlap_text}\n{seg}".strip() if overlap_text else seg
+
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks
+
+    def _split_by_length(self, text: str) -> List[str]:
+        if not text:
+            return []
+        size = max(1, int(self.chunk_size))
+        parts = []
         start = 0
         while start < len(text):
-            part = text[start : start + self.chunk_size].strip()
+            part = text[start : start + size].strip()
             if part:
-                chunks.append(part)
-            if start + self.chunk_size >= len(text):
-                break
-            start += step
-        return chunks
+                parts.append(part)
+            start += size
+        return parts
+
+    @staticmethod
+    def _split_sentences(text: str) -> List[str]:
+        if not text:
+            return []
+        splitter = re.compile(r"([。！？!?；;])")
+        pieces = splitter.split(text)
+        sentences: List[str] = []
+        i = 0
+        while i < len(pieces):
+            chunk = pieces[i]
+            if i + 1 < len(pieces):
+                chunk = f"{chunk}{pieces[i + 1]}"
+                i += 2
+            else:
+                i += 1
+            cleaned = chunk.strip()
+            if cleaned:
+                sentences.append(cleaned)
+        return sentences
+
+    @staticmethod
+    def _trim_overlap_to_boundary(text: str) -> str:
+        if not text:
+            return ""
+        # Prefer keeping overlap starting from last sentence boundary.
+        match = re.search(r"[。！？!?；;](?!.*[。！？!?；;])", text)
+        if match:
+            return text[match.end() :].strip()
+        return text.strip()
 
     @staticmethod
     def _read_text(path: Path) -> str:

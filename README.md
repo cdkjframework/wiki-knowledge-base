@@ -88,7 +88,6 @@ pip install -r requirements.txt
 .\build_wheel.ps1 -BuildCustomFaissGpuWheel -FaissGpuSupport CUDA
 ```
 
-详细参数与前置要求见 [docs/FAISS_GPU_WHEEL.md](docs/FAISS_GPU_WHEEL.md)。
 
 ### 2) 配置
 
@@ -158,7 +157,6 @@ config.json 关键字段：
 | **Kimi（月之暗面）** | moonshot-v1-32k | `base_url: https://api.moonshot.cn/v1` |
 | **LM Studio** | 本地部署模型 | `base_url: http://localhost:1234/v1` |
 
-详细配置说明请参考：[docs/UNIVERSAL_LLM_CLIENT.md](docs/UNIVERSAL_LLM_CLIENT.md)
 
 配置示例文件：[config.multi-provider.example.json](config.multi-provider.example.json)
 

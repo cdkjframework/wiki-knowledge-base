@@ -11,16 +11,16 @@
 
 # WIKI Knowledge Base
 
-A local-first open-source knowledge base that integrates vector retrieval, reranking, and conversational Q&A. It ships with a lightweight HTTP API, a built-in Web console, and SSE streaming responses for interactive knowledge apps.
+A local-first open-source knowledge base service that combines vector retrieval, reranking, and conversational Q&A. It ships with a lightweight HTTP API and a built-in Web console, supports SSE streaming, and is ideal for private knowledge Q&A applications.
 
 ## Highlights
 
-- Local, private storage with persistent FAISS indexing and sharding.
-- Retrieval + rerank pipeline to improve relevance.
-- SSE streaming for chat scenarios.
-- Context sessions via `user_id` and `session_id`.
-- Document ingestion (single, batch, rebuild).
-- Chunk management (list, edit, delete, rebuild).
+- Local private storage with persistent vector indexing and sharding.
+- Retrieval + rerank pipeline for better answer relevance.
+- SSE streaming responses for chat scenarios.
+- Contextual sessions via `user_id` and `session_id`.
+- Document ingestion (single, batch, directory rebuild).
+- Chunk management (view, edit, delete, rebuild).
 - Multi-model support for OpenAI, DeepSeek, Qwen, Doubao, xAI, Gemini, Kimi, LM Studio, and more.
 
 ## Feature Comparison
@@ -75,9 +75,9 @@ HTTP API (src/api.py)
 pip install -r requirements.txt
 ```
 
-### 2) Configure
+### 2) Configuration
 
-Edit `config.json` as needed (database, Redis, models, context, etc.).
+Edit `config.json` as needed (database, Redis, models, and context settings).
 
 ### 3) Start the service
 
@@ -94,13 +94,11 @@ Visit `http://127.0.0.1:5000/ui/` to use the built-in Web UI.
 Feature overview (from `web/`):
 
 - Chat: new sessions, history, SSE streaming answers, deep-think toggle, copy answers, source viewer.
-- Knowledge base: add text docs, upload files, batch upload, list filter, chunk manager (edit/delete/rebuild), retrieval settings, stats.
-- Model management: add/edit configs, enable/disable, set default, connectivity test, bootstrap presets.
-
-Screenshots by feature:
 
 **Chat**
 ![](assets/chat.png)
+
+- Knowledge base: add text docs, upload files, batch upload, list filters, chunk manager (edit/delete/rebuild), retrieval settings, stats.
 
 **Knowledge Base**
 ![](assets/kb.png)
@@ -108,11 +106,10 @@ Screenshots by feature:
 **Chunk Management**
 ![](assets/kb-fp.png)
 
+- Model management: add/edit configs, enable/disable, set default, connectivity test, bootstrap presets.
+
 **Model Management**
 ![](assets/model.png)
-
-**API Docs**
-![](assets/api.png)
 
 Entry points:
 
@@ -140,6 +137,9 @@ Entry points:
 | PDF | Text-only | ✅ | OCR in commercial edition |
 | OFD | Text-only | ✅ | OCR in commercial edition |
 
+**API Docs**
+![](assets/api.png)
+
 ## Configuration Overview
 
 Common `config.json` fields:
@@ -150,7 +150,7 @@ Common `config.json` fields:
 - `chat_context`: Context switch and max turns.
 - `lm_studio`: LM Studio connection and timeout.
 
-## Supported Models
+## Supported AI Models
 
 Supported via `UniversalLLMClient`:
 
@@ -167,7 +167,7 @@ Supported via `UniversalLLMClient`:
 
 See `config.multi-provider.example.json` for a full example.
 
-## Optional OCR and PDF Parsers
+## Optional Parsing and OCR
 
 Install `requirements.optional-parser.txt` when you need OCR or PDF Marker features.
 
@@ -187,7 +187,7 @@ Install `requirements.optional-parser.txt` when you need OCR or PDF Marker featu
 - `encrypt_secret.py`: Encrypt secrets
 - `tune_threshold.py`: Threshold evaluation
 
-## Build
+## Build & Release
 
 ```bash
 python -m build

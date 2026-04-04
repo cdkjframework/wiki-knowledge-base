@@ -100,6 +100,20 @@ Feature overview (from `web/`):
 
 - Knowledge base: add text docs, upload files, batch upload, list filters, chunk manager (edit/delete/rebuild), retrieval settings, stats.
 
+## Supported Document Formats
+
+| Format | Open-Source Edition | Commercial Edition | Notes |
+| --- | --- | --- | --- |
+| docx | ✅ | ✅ | Text parsing |
+| doc | - | ✅ | Commercial-only |
+| xls | ✅ | ✅ | Text parsing |
+| xlsx | ✅ | ✅ | Text parsing |
+| txt | ✅ | ✅ | Text parsing |
+| log | ✅ | ✅ | Text parsing |
+| images | - | ✅ | OCR in commercial edition |
+| PDF | Text-only | ✅ | OCR in commercial edition |
+| OFD | Text-only | ✅ | OCR in commercial edition |
+
 **Knowledge Base**
 ![](assets/kb.png)
 
@@ -122,20 +136,6 @@ Entry points:
 - Online docs: `http://127.0.0.1:5000/api-docs` or `http://127.0.0.1:5000/docs/`
 - Repo API guide: `docs/API-EN.md`
 - Chinese API guide: `docs/API.md`
-
-## Supported Document Formats
-
-| Format | Open-Source Edition | Commercial Edition | Notes |
-| --- | --- | --- | --- |
-| docx | ✅ | ✅ | Text parsing |
-| doc | - | ✅ | Commercial-only |
-| xls | ✅ | ✅ | Text parsing |
-| xlsx | ✅ | ✅ | Text parsing |
-| txt | ✅ | ✅ | Text parsing |
-| log | ✅ | ✅ | Text parsing |
-| images | - | ✅ | OCR in commercial edition |
-| PDF | Text-only | ✅ | OCR in commercial edition |
-| OFD | Text-only | ✅ | OCR in commercial edition |
 
 **API Docs**
 ![](assets/api.png)

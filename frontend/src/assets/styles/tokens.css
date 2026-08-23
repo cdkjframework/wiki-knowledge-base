@@ -1,0 +1,42 @@
+:root {
+  /* Stripe 派生令牌（对齐 deliverables/prototype/design-spec.md） */
+  --color-primary: #635bff;
+  --color-primary-hover: #5451e5;
+  --color-primary-active: #4a47cc;
+  --color-primary-subtle: #eeeffe;
+  --color-link: #4a47cc;
+  --color-bg: #ffffff;
+  --color-bg-subtle: #f6f9fc;
+  --color-surface: #ffffff;
+  --color-border: #e3e8ee;
+  --color-border-strong: #cdd5df;
+  --color-text-primary: #0a2540;
+  --color-text-secondary: #425466;
+  --color-text-tertiary: #697386;
+  --color-success: #0a8754;
+  --color-warning: #b54708;
+  --color-danger: #c2410c;
+
+  --color-edition-locked-bg: #f1f3f6;
+  --color-edition-locked-fg: #8792a2;
+  --color-edition-locked-text: #5a6675;
+
+  /* Element Plus 主题映射 */
+  --el-color-primary: var(--color-primary);
+  --el-color-success: var(--color-success);
+  --el-color-warning: var(--color-warning);
+  --el-color-danger: var(--color-danger);
+  --el-border-color: var(--color-border);
+  --el-text-color-primary: var(--color-text-primary);
+  --el-bg-color-page: var(--color-bg-subtle);
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}

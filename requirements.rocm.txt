@@ -1,0 +1,11 @@
+# AMD ROCm 闂備胶绮〃鍛存偋婵犲偊鑰?
+# 闂備焦妞垮鍧楀礉瀹ュ洦鍏?
+#   pip install -r requirements.rocm.txt
+# 婵犵數鍋涢ˇ顓㈠礉瀹ュ绀?
+#   ROCm 闂?PyTorch 濠电偞鍨堕幐璇参ｉ幒妞尖偓鍛存晝閸屾侗妫冮梺闈涚箳婵敻宕?Linux闂備焦瀵х粙鎴︻敆閻窉dows 闂備胶绮划鐘诲垂娴兼番鈧倿濡搁埡鍌滃姷濠殿喗锕╅崜娑㈠春濡も偓閳藉骞樺畷鍥嗐垻鎲搁悧鍫㈠弨闁诡喕绮欐俊鎼佹晲閸屾矮澹?
+
+-r requirements.common.txt
+
+--extra-index-url https://download.pytorch.org/whl/rocm6.0
+torch>=2.7.0,<3.0.0
+torchvision

@@ -1,0 +1,163 @@
+{
+  "api_key_cipher": "CIPHER_PLACEHOLDER",
+  "db_password_cipher": "CIPHER_PLACEHOLDER",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5000
+  },
+  "search": {
+    "default_k": 2,
+    "max_search_results": 3
+  },
+  "db": {
+    "backend": "mysql",
+    "auto_create_database": false,
+    "table": "kb_session_messages",
+    "mysql": {
+      "host": "127.0.0.1",
+      "port": 3306,
+      "user": "root",
+      "password": "password",
+      "database": "knowledge_base",
+      "connect_timeout": 5
+    },
+    "postgresql": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "postgres",
+      "password": "",
+      "database": "knowledge_base",
+      "connect_timeout": 5
+    }
+  },
+  "session": {
+    "backend": "redis",
+    "redis": {
+      "host": "127.0.0.1",
+      "port": 6379,
+      "database": 0,
+      "password": ""
+    }
+  },
+  "knowledge_base": {
+    "storage": {
+      "persist_dir": "./kb_store",
+      "model_cache_dir": "./models/hf_cache"
+    },
+    "embedding": {
+      "model": "Qwen/Qwen3-Embedding-0.6B",
+      "dimension": null,
+      "device": "auto",
+      "local_files_only": true,
+      "use_lm_studio": false
+    },
+    "rerank": {
+      "model": "Qwen/Qwen3-Reranker-0.6B",
+      "use_lm_studio": false
+    },
+    "chat": {
+      "model_type": "qwen",
+      "model": "qwen-max",
+      "use_lm_studio": true,
+      "local_files_only": false,
+      "temperature": 0.2,
+      "max_tokens": 4096
+    },
+    "lm_studio": {
+      "provider": "qwen",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "sk-your-dashscope-api-key",
+      "chat_model": "qwen-max",
+      "timeout": 60
+    },
+    "ocr": {
+      "enabled": true,
+      "engine": "llm",
+      "local_files_only": true,
+      "enable_marker": true,
+      "enable_pix2text": true,
+      "enable_paddleocr": true,
+      "release_after_use": true,
+      "pdf_ocr_dpi": 200,
+      "pdf_ocr_max_pages": 0,
+      "llm": {
+        "model_name": "Qwen/Qwen2-VL-2B-Instruct",
+        "prompt": "请识别图片中的所有内容，并以 markdown 结构化文档返回。",
+        "device": "cpu",
+        "dtype": "auto",
+        "max_new_tokens": 1024,
+        "min_pixels": 0,
+        "max_pixels": 0
+      },
+      "paddleocr": {
+        "lang": "ch",
+        "use_textline_orientation": true,
+        "use_angle_cls": true,
+        "show_log": false
+      }
+    },
+    "chunking": {
+      "size": 800,
+      "overlap": 120
+    },
+    "retrieval": {
+      "candidate_multiplier": 8,
+      "min_candidates": 30,
+      "embed_weight": 0.35,
+      "rerank_weight": 0.65
+    }
+  },
+  "chat_context": {
+    "enabled": true,
+    "max_turns": 6
+  },
+  "logging": {
+    "level": "INFO",
+    "keep_days": 7,
+    "enable_debug": false,
+    "console_level": "INFO"
+  },
+  "_comments": {
+    "implementation": "UniversalLLMClient 当前基于 OpenAI Python SDK 实现，统一调用 OpenAI 兼容聊天、流式、Embedding 与 Rerank 接口。",
+    "ocr": {
+      "usage": "OCR 当前支持 llm 与 paddleocr 两种引擎，通过 knowledge_base.ocr.engine 切换。",
+      "engine": "可选值: llm, paddleocr",
+      "local_files_only": "推荐设为 true，强制只从本地缓存加载 OCR 大模型，不自动联网下载。",
+      "switches": "enable_marker / enable_pix2text / enable_paddleocr 可用于逐个关闭可选解析链路，排查到底是谁在下载模型。",
+      "config_shape": "视觉模型参数统一放在 knowledge_base.ocr.llm 子节点；ocr 顶层保留引擎选择和通用开关，不再重复配置 llm 参数。",
+      "llm_note": "llm 引擎当前适配 Qwen2-VL，本地缓存目录使用 knowledge_base.storage.model_cache_dir。",
+      "paddleocr_note": "paddleocr 引擎适合普通版式 OCR，需先安装 requirements.optional-parser.txt 中的可选依赖。新版本优先使用 use_textline_orientation；旧配置中的 use_angle_cls 仍兼容。"
+    },
+    "lm_studio": {
+      "usage": "knowledge_base.lm_studio 节点不仅可用于 LM Studio，也可用于任意 OpenAI 兼容网关或云服务。",
+      "provider": "可选值: openai, deepseek, qwen, doubao, xai, gemini, kimi, lm_studio",
+      "provider_note": "provider 用于提供商识别、默认 endpoint 推断和鉴权兼容；如果 base_url 已明确填写，则优先使用 base_url。",
+      "local_gateway_note": "如果你连接的是本地 LM Studio、vLLM、OneAPI 或其他本地 OpenAI 兼容网关，请把 base_url 写成本地地址，例如 http://127.0.0.1:1234 或 http://127.0.0.1:1234/v1；不要因为模型来自 qwen/deepseek 就把本地地址改成云端 endpoint。",
+      "base_url_examples": {
+        "openai": "https://api.openai.com/v1",
+        "deepseek": "https://api.deepseek.com/v1",
+        "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "doubao": "https://ark.cn-beijing.volces.com/api/v3",
+        "xai": "https://api.x.ai/v1",
+        "gemini": "https://generativelanguage.googleapis.com/v1beta",
+        "kimi": "https://api.moonshot.cn/v1",
+        "lm_studio": "http://localhost:1234/v1"
+      },
+      "model_examples": {
+        "openai": "gpt-4, gpt-4-turbo, gpt-3.5-turbo",
+        "deepseek": "deepseek-chat, deepseek-coder",
+        "qwen": "qwen-max, qwen-plus, qwen-turbo, qwen-long",
+        "doubao": "doubao-pro-32k, doubao-lite-32k",
+        "xai": "grok-beta, grok-vision-beta",
+        "gemini": "gemini-pro, gemini-ultra, gemini-vision-pro",
+        "kimi": "moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k"
+      },
+      "sdk_mapping": {
+        "chat": "OpenAI.chat.completions.create",
+        "stream": "OpenAI.chat.completions.create(stream=True)",
+        "embedding": "OpenAI.embeddings.create",
+        "rerank": "OpenAI.post('/rerank')"
+      }
+    }
+  }
+}

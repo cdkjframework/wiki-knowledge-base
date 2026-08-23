@@ -1,0 +1,77 @@
+.app-layout {
+  min-height: 100vh;
+  background: var(--color-bg-subtle);
+}
+
+.app-aside {
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-brand__logo {
+  height: 52px;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.app-brand__logo--compact {
+  height: 36px;
+  max-width: 52px;
+}
+
+.app-header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-main {
+  padding: 20px;
+}
+
+.page-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 20px 24px;
+}
+
+.page-card h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.page-card p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.edition-tag {
+  margin-left: 8px;
+}
+
+#nprogress .bar {
+  background: var(--color-primary) !important;
+}

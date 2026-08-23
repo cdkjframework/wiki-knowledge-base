@@ -1,0 +1,135 @@
+{
+  "api_key_cipher": "CIPHER_PLACEHOLDER",
+  "db_password_cipher": "CIPHER_PLACEHOLDER",
+  "secret_encryption_key": "VdDALFk6SFGe3NpzgXxpOa_ujnusvZJjcF_qcVoYnPI=",
+  "KB_PROJECT_ROOT": "./",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5000
+  },
+  "search": {
+    "default_k": 2,
+    "max_search_results": 3,
+    "min_source_similarity": 0.55
+  },
+  "db": {
+    "backend": "mysql",
+    "auto_create_database": false,
+    "table": "kb_session_messages",
+    "mysql": {
+      "host": "10.10.0.33",
+      "port": 3306,
+      "user": "root",
+      "password": "I5*Z70in82WVfDYU",
+      "database": "knowledge_base",
+      "connect_timeout": 5
+    },
+    "postgresql": {
+      "host": "10.10.0.33",
+      "port": 5432,
+      "user": "postgres",
+      "password": "framewiki.c0m",
+      "database": "knowledge_base",
+      "connect_timeout": 5,
+      "options": "-c client_encoding=UTF8"
+    }
+  },
+  "session": {
+    "backend": "redis",
+    "redis": {
+      "host": "10.10.0.33",
+      "port": 6379,
+      "database": 10,
+      "password": "123456"
+    }
+  },
+  "knowledge_base": {
+    "preload": {
+      "embedding": false,
+      "reranker": false
+    },
+    "memory": {
+      "release_gpu_cache": true,
+      "unload_models_idle_seconds": 60
+    },
+    "auto_download_missing_models": false,
+    "storage": {
+      "persist_dir": "./kb_store",
+      "model_cache_dir": "./models/hf_cache",
+      "vector_backend": "zvec",
+      "cleanup_legacy_index_on_migrate": true
+    },
+    "embedding": {
+      "model": "Qwen/Qwen3-Embedding-0.6B",
+      "dimension": null,
+      "device": "auto",
+      "local_files_only": true,
+      "use_lm_studio": false
+    },
+    "rerank": {
+      "model": "Qwen/Qwen3-Reranker-0.6B",
+      "use_lm_studio": false
+    },
+    "chat": {
+      "model_type": "qwen",
+      "model": "qwen/qwen3.5-35b-a3b",
+      "use_lm_studio": true,
+      "local_files_only": true,
+      "temperature": 0.2,
+      "max_tokens": 131072,
+      "system_intro": "您的专属知识伙伴：WIKI本地知识系统\n\n您好！当您询问“你是谁？”时，这是在了解本系统的核心身份。请参考以下全面介绍：\n\n第一部分：关于“WIKI本地知识”是谁（系统定位）\n\n直接回答“你是谁？”：我是WIKI本地知识，您的本地私有化知识库与智能助理。\n\n核心定位：我本质上是为您服务的“第二大脑”和“专属知识引擎”。我的一切能力都基于您提供的知识，并在您的完全掌控下运行。\n\n关键特性：我部署在您的本地环境中，确保所有数据的私有性与安全，不依赖外部网络。\n\n第二部分：关于您与我的关系（“我是谁？”的答案）\n\n直接回答“我是谁？”：您是我的唯一管理者、使用者与共建者。我们之间是紧密协作的伙伴关系。\n\n您的角色：\n\n个人用户：可管理笔记、学习资料与灵感。\n\n团队/组织：可沉淀项目文档、内部规范与协作经验。\n\n系统所有者：完全定义我的知识边界与运行规则。\n\n合作模式：您赋予我知识，我依据这些知识为您提供专属服务。\n\n第三部分：关于我能为您做什么（核心功能与服务）\n\n直接回答“你能干什么？”：我能将您的静态信息转化为动态可用的知识资产，并基于此提供智能服务。具体包括：\n\n1. 智能问答\n\n功能描述：您可直接用自然语言（例如“我们产品的优势？”）向我提问，我将基于您的知识库给出答案。\n\n应用场景：快速获取已沉淀知识中的具体信息。\n\n2. 精准检索\n\n功能描述：快速从您的海量本地资料中，定位到最相关的信息片段，而非仅仅文件列表。\n\n应用场景：高效查找分散在不同文档中的关键内容。\n\n3. 知识管理\n\n功能描述：帮助您将零散信息整合、关联，形成结构化的知识网络。\n\n应用场景：构建并维护个人或团队的知识体系。\n\n4. 持续学习与更新\n\n功能描述：您可以随时向我“传授”新知识或修正旧信息，让我与您同步进化。\n\n应用场景：保持知识库的时效性与准确性。\n\n5. 安全私密协作\n\n功能描述：所有数据存储在您指定的本地，保障绝对安全，并支持安全的内部知识共享。\n\n应用场景：在保护核心数据隐私的前提下进行团队知识协作。\n\n总而言之，我是一位能理解您的问题、运用您的知识、并7x24小时待命的专属知识顾问。您现在就可以向我提问，或开始为我注入知识，让我们共同成长。"
+    },
+    "lm_studio": {
+      "model_type": "qwen",
+      "base_url": "http://127.0.0.1:1234",
+      "api_key": "",
+      "chat_model": "qwen/qwen3.5-35b-a3b",
+      "timeout": 300
+    },
+    "chunking": {
+      "size": 800,
+      "overlap": 120
+    },
+    "retrieval": {
+      "candidate_multiplier": 8,
+      "min_candidates": 30,
+      "embed_weight": 0.35,
+      "rerank_weight": 0.65
+    },
+    "ocr": {
+      "enabled": true,
+      "engine": "paddleocr",
+      "local_files_only": true,
+      "auto_download_missing_models": false,
+      "auto_install_missing_packages": true,
+      "release_after_use": true,
+      "pdf_ocr_dpi": 200,
+      "pdf_ocr_max_pages": 0,
+      "pdf_ocr_discard_garbage": true,
+      "llm": {
+        "model_name": "Qwen/Qwen2-VL-2B-Instruct",
+        "prompt": "请识别图片中的所有内容，并以 markdown 结构化文档返回。",
+        "device": "cpu",
+        "dtype": "auto",
+        "max_new_tokens": 1024,
+        "min_pixels": 0,
+        "max_pixels": 0
+      },
+      "paddleocr": {
+        "lang": "ch",
+        "use_textline_orientation": true,
+        "show_log": false
+      }
+    }
+  },
+  "chat_context": {
+    "enabled": true,
+    "max_turns": 6
+  },
+  "logging": {
+    "level": "INFO",
+    "keep_days": 7,
+    "enable_debug": false,
+    "console_level": "INFO"
+  }
+}

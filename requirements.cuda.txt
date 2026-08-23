@@ -1,0 +1,9 @@
+# NVIDIA CUDA 闂備胶绮〃鍛存偋婵犲偊鑰?
+# 闂備焦妞垮鍧楀礉瀹ュ洦鍏?
+#   pip install -r requirements.cuda.txt
+
+-r requirements.common.txt
+
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.7.0,<3.0.0
+torchvision

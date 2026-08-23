@@ -1,0 +1,8 @@
+# CPU 闂備胶绮〃鍛存偋婵犲偊鑰?
+# 闂備焦妞垮鍧楀礉瀹ュ洦鍏?
+#   pip install -r requirements.cpu.txt
+
+-r requirements.common.txt
+
+torch>=2.7.0,<3.0.0
+torchvision

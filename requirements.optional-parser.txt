@@ -1,0 +1,33 @@
+# Optional parser stack for enabling OCR image parsing and PDF Marker.
+# Install only when you need Pix2Text/Marker features.
+# Usage:
+#   pip install -r requirements.optional-parser.txt
+
+# Keep aligned with current optional parser runtime baseline
+torch==2.5.1
+torchvision==0.20.1
+transformers==4.57.6
+tokenizers==0.22.2
+huggingface_hub==0.36.2
+anyio==4.12.1
+filelock==3.25.2
+tqdm==4.67.3
+
+# Pix2Text runtime compatibility
+pix2text==1.1.3
+optimum==1.23.3
+litellm==1.82.5
+
+# PaddleOCR for image-based PDF OCR
+paddleocr==3.4.0
+paddlepaddle==3.3.1
+pymupdf
+pdf2image
+
+# Optional PDF marker engine (install if your environment supports it)
+# marker-pdf has a hard dependency: openai<2.0.0
+# This conflicts with litellm/openai 2.x in the main project environment.
+# If you need marker-pdf, prefer a separate virtual environment.
+# marker-pdf==1.10.2
+
+

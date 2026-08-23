@@ -1,0 +1,11 @@
+# 濠殿喗甯楃粙鎺椻€﹂崼銉晣?CPU 闂備胶绮〃鍛存偋婵犲偊鑰?
+# 闂備焦妞垮鍧楀礉瀹ュ洦鍏?
+#   pip install -r requirements.txt
+# 闂備胶顭堢换鎴濓耿閸︻厼鍨濇い鎺戝閸嬪鏌涢銈呮瀾闁?
+#   pip install -r requirements.cuda.txt
+#   pip install -r requirements.rocm.txt
+
+-r requirements.common.txt
+
+torch>=2.7.0,<3.0.0
+torchvision

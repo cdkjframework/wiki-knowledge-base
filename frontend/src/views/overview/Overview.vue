@@ -11,7 +11,7 @@ const features = [
   { title: '语义递归分片', desc: '按标题与语义边界切分，避免硬截断导致的上下文破碎。', tag: '语义边界' },
   { title: '多模型中立', desc: 'Embedding / Rerank / 生成模型可插拔，不绑定单一厂商。', tag: '可插拔' },
   { title: '本地隐私', desc: '索引与语料留存内网，可选本地推理，数据不出边界。', tag: '数据不出内网' },
-  { title: '开放 MCP · API', desc: 'REST API 与 MCP 接入，便于嵌入工作流与智能体。', tag: 'REST + MCP' },
+  { title: '开放接口与 MCP', desc: 'REST API 与 MCP 接入，便于嵌入工作流与智能体。', tag: 'REST + MCP' },
   { title: '评测可观测', desc: '指标看板与验收线可视化，改动可量化回归。', tag: '可观测' },
 ]
 
@@ -34,13 +34,13 @@ interface CompareRow {
 
 const compareRows: CompareRow[] = [
   { group: '质量主轴', id: 'KB-01', name: '混合检索（BM25 ∪ 向量 + Rerank）', community: 'yes', commercial: 'yes' },
-  { id: 'KB-02', name: '语义递归分片', community: 'yes', commercial: 'yes' },
+  { id: 'KB-02', name: '语义递归分片', community: 'no', commercial: 'yes' },
   { id: 'KB-10', name: '评测集', community: 'yes', commercial: 'yes' },
   { id: 'KB-11', name: '指标看板', community: 'yes', commercial: 'yes' },
   { id: 'KB-12', name: '引用归因与流式输出', community: 'yes', commercial: 'yes' },
   { id: 'KB-17', name: '多轮查询改写', community: 'yes', commercial: 'yes' },
   { group: '企业安全与治理', id: 'KB-03', name: '多租户隔离', community: 'no', commercial: 'yes' },
-  { id: 'KB-04', name: '细粒度 RBAC', community: 'partial', commercial: 'yes' },
+  { id: 'KB-04', name: '细粒度角色权限', community: 'partial', commercial: 'yes' },
   { id: 'KB-05', name: '操作审计', community: 'partial', commercial: 'yes' },
   { id: 'KB-06', name: '数据加密', community: 'no', commercial: 'yes' },
   { group: '集成与增强', id: 'KB-07', name: 'MCP 调度增强', community: 'partial', commercial: 'yes' },
@@ -111,7 +111,7 @@ function scrollEditions() {
     </section>
 
     <section id="editions" class="page-card section">
-      <h2>社区版 vs 商业版</h2>
+      <h2>社区版与商业版对比</h2>
       <p class="lead">
         两版为<strong>独立安装 / 独立部署</strong>，不在同一程序内切换。下表为能力边界摘要（完整清单见产品 PRD）。
       </p>

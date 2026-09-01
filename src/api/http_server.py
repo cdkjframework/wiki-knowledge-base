@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import default
 import json
@@ -31,6 +31,7 @@ try:
         handle_get_history,
         handle_get_kb,
         handle_get_mcp,
+        handle_get_metrics,
         handle_get_model,
         handle_get_query,
         handle_get_session,
@@ -70,6 +71,7 @@ except ImportError:  # pragma: no cover
         handle_get_history,
         handle_get_kb,
         handle_get_mcp,
+        handle_get_metrics,
         handle_get_model,
         handle_get_query,
         handle_get_session,
@@ -98,6 +100,26 @@ except ImportError:  # pragma: no cover
     from knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
+
+
+def _license_handlers() -> tuple[Any, Any, Any] | None:
+    """商业 License 路由；社区包无 business 时为 None。"""
+    try:
+        from ..commercial.business.license.http import (
+            handle_get_license,
+            handle_post_license,
+            handle_put_license,
+        )
+    except ImportError:
+        try:
+            from commercial.business.license.http import (
+                handle_get_license,
+                handle_post_license,
+                handle_put_license,
+            )
+        except ImportError:
+            return None
+    return handle_get_license, handle_post_license, handle_put_license
 
 
 PROJECT_ROOT = resolve_project_root()
@@ -2669,6 +2691,8 @@ class HttpApiServer:
                     return True
                 if handle_get_stats(self, api, logical):
                     return True
+                if handle_get_metrics(self, api, logical):
+                    return True
                 if handle_get_kb(self, api, logical):
                     return True
                 if handle_get_history(self, api, logical):
@@ -2677,11 +2701,19 @@ class HttpApiServer:
                     return True
                 if handle_get_mcp(self, api, logical):
                     return True
+                license_handlers = _license_handlers()
+                if license_handlers and license_handlers[0](self, api, logical):
+                    return True
                 return False
 
             def _dispatch_api_post(self, logical: str) -> bool:
                 if logical in {"/kb/file", "/kb/files"}:
                     if handle_post_kb(self, api, logical, body=None):
+                        return True
+                # License 证书上传走 multipart，须在 _read_json 之前处理（仅商业包）
+                license_handlers = _license_handlers()
+                if logical == "/license" and license_handlers:
+                    if license_handlers[1](self, api, logical):
                         return True
                 body = self._read_json()
                 if handle_post_session(self, api, logical, body):
@@ -2852,6 +2884,9 @@ class HttpApiServer:
                     if handle_put_model(self, api, logical):
                         return
                     if handle_put_mcp(self, api, logical):
+                        return
+                    license_handlers = _license_handlers()
+                    if license_handlers and license_handlers[2](self, api, logical):
                         return
                     self._not_found()
                 except ValueError as exc:

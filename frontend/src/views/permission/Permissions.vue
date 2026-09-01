@@ -24,7 +24,7 @@ const gates = [
     commercialNote: '多租户数据隔离 + 配额',
   },
   {
-    title: '细粒度 RBAC',
+    title: '细粒度角色权限',
     description: '自定义角色与资源策略，细化到知识库与 API。',
     communityNote: '内置管理员 / 编辑 / 只读示意',
     commercialNote: '自定义角色 + 策略引擎',

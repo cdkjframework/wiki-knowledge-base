@@ -50,7 +50,6 @@ _DOCS_EXACT: frozenset[str] = frozenset(
     }
 )
 
-# /kb/{seg}/... 中属于 API 的首段（其余视为前端路由，如 management）
 _KB_API_SEGMENTS: frozenset[str] = frozenset(
     {
         "documents",
@@ -84,8 +83,20 @@ def legacy_web_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _commercial_api_paths() -> frozenset[str]:
+    """商业专属 API 路径；社区包无 business 时为空。"""
+    try:
+        from ...commercial.business.license.http import LICENSE_LOGICAL_PATH
+    except ImportError:
+        try:
+            from commercial.business.license.http import LICENSE_LOGICAL_PATH
+        except ImportError:
+            return frozenset()
+    return frozenset({LICENSE_LOGICAL_PATH})
+
+
 def _is_logical_api_path(logical: str) -> bool:
-    if logical in _API_EXACT:
+    if logical in _API_EXACT or logical in _commercial_api_paths():
         return True
     if logical.startswith("/history/") or logical.startswith("/session/"):
         return True

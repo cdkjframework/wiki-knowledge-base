@@ -1,0 +1,68 @@
+# WIKI 知识库默认 golden 题集（KB-10）
+# 语料：把本仓库的 docs/ 与 README.md 导入知识库后跑分；换成自己的语料时请整体替换本文件。
+# 格式：一行一题，UTF-8；positives 写「应该被检索命中的文档名」，可写多个。
+# 跑分：python -m src.eval.cli --dataset conf/eval/golden-default.jsonl
+{"id": "kb-001", "query": "怎么从 v1.0.0 升级到 v1.1.0", "positives": ["升级迁移指南.md"], "tags": ["部署运维"]}
+{"id": "kb-002", "query": "升级前需要备份哪些数据", "positives": ["升级迁移指南.md"], "tags": ["部署运维"]}
+{"id": "kb-003", "query": "升级过程中有哪些破坏性变更", "positives": ["升级迁移指南.md"], "tags": ["部署运维"]}
+{"id": "kb-004", "query": "升级失败了怎么回滚到旧版本", "positives": ["升级迁移指南.md"], "tags": ["部署运维"]}
+{"id": "kb-005", "query": "新版本的目录结构和老版本有什么不一样", "positives": ["升级迁移指南.md", "项目结构与初步开发规划.md"], "tags": ["部署运维", "架构"]}
+{"id": "kb-006", "query": "License 证书是怎么签发的", "positives": ["商业版-License证书签发与校验.md"], "tags": ["商业"]}
+{"id": "kb-007", "query": "license 用的是什么签名算法", "positives": ["商业版-License证书签发与校验.md"], "tags": ["商业"]}
+{"id": "kb-008", "query": "HMAC 密钥怎么配置和保管", "positives": ["商业版-License证书签发与校验.md"], "tags": ["商业", "配置"]}
+{"id": "kb-009", "query": "lic 证书文件里面是什么格式", "positives": ["商业版-License证书签发与校验.md"], "tags": ["商业"]}
+{"id": "kb-010", "query": "授权过期之后系统会怎么表现", "positives": ["商业版-License证书签发与校验.md"], "tags": ["商业"]}
+{"id": "kb-011", "query": "证书被人改过还能通过校验吗", "positives": ["商业版-License证书签发与校验.md"], "tags": ["商业"]}
+{"id": "kb-012", "query": "开发环境怎么绕过 license 校验", "positives": ["商业版-License证书签发与校验.md", "README.md"], "tags": ["商业", "配置"]}
+{"id": "kb-013", "query": "商业版比社区版多了哪些功能", "positives": ["商业版功能开发计划-专属与增强.md"], "tags": ["规划", "商业"]}
+{"id": "kb-014", "query": "多租户隔离计划在哪个版本交付", "positives": ["商业版功能开发计划-专属与增强.md", "社商功能开发计划-双周与季度.md"], "tags": ["规划", "商业"]}
+{"id": "kb-015", "query": "RBAC 权限模型怎么设计的", "positives": ["商业版功能开发计划-专属与增强.md"], "tags": ["商业"]}
+{"id": "kb-016", "query": "审计日志记录哪些操作", "positives": ["商业版功能开发计划-专属与增强.md"], "tags": ["商业"]}
+{"id": "kb-017", "query": "OCR 和复杂文档解析属于哪个版本", "positives": ["商业版功能开发计划-专属与增强.md", "社商功能开发计划-双周与季度.md"], "tags": ["规划", "商业"]}
+{"id": "kb-018", "query": "MCP 集成什么时候做", "positives": ["商业版功能开发计划-专属与增强.md", "社商功能开发计划-双周与季度.md"], "tags": ["规划", "商业"]}
+{"id": "kb-019", "query": "前端商业专属页面放在哪个目录", "positives": ["商业版功能开发计划-专属与增强.md", "工程约定-目录命名注释与双仓.md"], "tags": ["架构", "商业"]}
+{"id": "kb-020", "query": "语义分片为什么只给商业版", "positives": ["社商功能开发计划-双周与季度.md", "商业版功能开发计划-专属与增强.md"], "tags": ["规划"]}
+{"id": "kb-021", "query": "社区版和商业版分别面向什么用户", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-022", "query": "社区版 v1.1 要做哪些功能", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-023", "query": "评测集这个需求的验收标准是什么", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-024", "query": "指标看板要展示哪几个 KPI", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-025", "query": "混合检索的质量线是多少", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-026", "query": "引用归因的归因率要求", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-027", "query": "查询改写和速率限制排在哪个版本", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-028", "query": "API Key 管理怎么做吊销", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-029", "query": "网页导入单个 URL 是社区功能吗", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-030", "query": "增量更新和全量重建的区别", "positives": ["社商功能开发计划-双周与季度.md"], "tags": ["规划"]}
+{"id": "kb-031", "query": "社区版和商业版怎么分成两个仓库", "positives": ["社商双仓与迭代发布方案.md"], "tags": ["部署运维"]}
+{"id": "kb-032", "query": "发版到 Gitee 之前要做什么检查", "positives": ["社商双仓与迭代发布方案.md", "工程约定-目录命名注释与双仓.md"], "tags": ["部署运维"]}
+{"id": "kb-033", "query": "build_edition community 是干什么用的", "positives": ["社商双仓与迭代发布方案.md", "工程约定-目录命名注释与双仓.md"], "tags": ["部署运维"]}
+{"id": "kb-034", "query": "社区包里不能包含哪些目录", "positives": ["社商双仓与迭代发布方案.md", "工程约定-目录命名注释与双仓.md"], "tags": ["部署运维", "架构"]}
+{"id": "kb-035", "query": "商业代码怎么往社区主干合并", "positives": ["社商双仓与迭代发布方案.md"], "tags": ["部署运维"]}
+{"id": "kb-036", "query": "版本号和发布节奏是怎么约定的", "positives": ["社商双仓与迭代发布方案.md", "社商功能开发计划-双周与季度.md"], "tags": ["部署运维", "规划"]}
+{"id": "kb-037", "query": "双周迭代每天分别做什么", "positives": ["社商同步开发计划-双周并行.md"], "tags": ["规划"]}
+{"id": "kb-038", "query": "哪些功能是社区商业都有的", "positives": ["社商同步开发计划-双周并行.md"], "tags": ["规划"]}
+{"id": "kb-039", "query": "共有功能的验收要社商用同一套标准吗", "positives": ["社商同步开发计划-双周并行.md"], "tags": ["规划"]}
+{"id": "kb-040", "query": "双周看板模板长什么样", "positives": ["社商同步开发计划-双周并行.md"], "tags": ["规划"]}
+{"id": "kb-041", "query": "源码文件用什么编码和注释语言", "positives": ["工程约定-目录命名注释与双仓.md"], "tags": ["架构"]}
+{"id": "kb-042", "query": "HTTP 处理代码应该放在哪个目录", "positives": ["工程约定-目录命名注释与双仓.md", "项目结构与初步开发规划.md"], "tags": ["架构"]}
+{"id": "kb-043", "query": "临时调试脚本放哪里", "positives": ["工程约定-目录命名注释与双仓.md"], "tags": ["架构"]}
+{"id": "kb-044", "query": "目录和文件命名有什么规范", "positives": ["工程约定-目录命名注释与双仓.md"], "tags": ["架构"]}
+{"id": "kb-045", "query": "前端怎么做社区商业隔离", "positives": ["工程约定-目录命名注释与双仓.md", "商业版功能开发计划-专属与增强.md"], "tags": ["架构"]}
+{"id": "kb-046", "query": "整个项目的模块是怎么划分的", "positives": ["项目结构与初步开发规划.md"], "tags": ["架构"]}
+{"id": "kb-047", "query": "知识库检索链路的整体流程", "positives": ["项目结构与初步开发规划.md"], "tags": ["架构"]}
+{"id": "kb-048", "query": "向量索引和分片存在什么地方", "positives": ["项目结构与初步开发规划.md"], "tags": ["架构"]}
+{"id": "kb-049", "query": "产品功能重新规划的背景是什么", "positives": ["WIKI_PRD_功能重新规划.md"], "tags": ["规划"]}
+{"id": "kb-050", "query": "PRD 里定义的核心用户场景", "positives": ["WIKI_PRD_功能重新规划.md"], "tags": ["规划"]}
+{"id": "kb-051", "query": "怎么接入不同厂商的大模型", "positives": ["UNIVERSAL_LLM_CLIENT.md"], "tags": ["模型接入"]}
+{"id": "kb-052", "query": "通用 LLM 客户端支持哪些参数", "positives": ["UNIVERSAL_LLM_CLIENT.md"], "tags": ["模型接入"]}
+{"id": "kb-053", "query": "流式输出是怎么实现的", "positives": ["UNIVERSAL_LLM_CLIENT.md"], "tags": ["模型接入"]}
+{"id": "kb-054", "query": "几种大模型客户端的对比结论", "positives": ["CLIENT_COMPARISON.md"], "tags": ["模型接入"]}
+{"id": "kb-055", "query": "该选哪个客户端实现更合适", "positives": ["CLIENT_COMPARISON.md"], "tags": ["模型接入"]}
+{"id": "kb-056", "query": "可选文档解析器怎么安装", "positives": ["OPTIONAL_PARSER_SETUP.md"], "tags": ["解析"]}
+{"id": "kb-057", "query": "PDF 解析依赖哪些第三方库", "positives": ["OPTIONAL_PARSER_SETUP.md"], "tags": ["解析"]}
+{"id": "kb-058", "query": "解析器装不上有什么替代方案", "positives": ["OPTIONAL_PARSER_SETUP.md"], "tags": ["解析"]}
+{"id": "kb-059", "query": "config.json 里每个配置项什么意思", "positives": ["config说明.md", "README.md"], "tags": ["配置"]}
+{"id": "kb-060", "query": "怎么按环境切换配置文件", "positives": ["config说明.md", "README.md"], "tags": ["配置"]}
+{"id": "kb-061", "query": "检索的 top_k 和相关性阈值在哪里配", "positives": ["config说明.md"], "tags": ["配置"]}
+{"id": "kb-062", "query": "项目怎么安装和启动", "positives": ["README.md"], "tags": ["部署运维"]}
+{"id": "kb-063", "query": "服务默认监听哪个端口", "positives": ["README.md"], "tags": ["部署运维"]}
+{"id": "kb-064", "query": "怎么把文档导入知识库", "positives": ["README.md"], "tags": ["部署运维"]}

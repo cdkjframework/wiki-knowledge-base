@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledge-base"
-version = "1.0.0"
+version = "1.1.1"
 description = "Local-first knowledge base service with vector search and conversational QA"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,6 +17,7 @@ dynamic = ["dependencies"]
 [project.scripts]
 knowledge-base = "src.main:_main"
 wiki-edition = "src.commercial.cli:main"
+wiki-eval = "src.eval.cli:main"
 
 [tool.setuptools]
 include-package-data = true

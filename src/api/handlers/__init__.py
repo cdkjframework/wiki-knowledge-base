@@ -18,6 +18,7 @@ from .mcp import (
     handle_post_mcp,
     handle_put_mcp,
 )
+from .metrics import handle_get_metrics
 from .model import (
     handle_delete_model,
     handle_get_model,
@@ -41,6 +42,7 @@ __all__ = [
     "handle_get_history",
     "handle_get_kb",
     "handle_get_mcp",
+    "handle_get_metrics",
     "handle_get_model",
     "handle_get_query",
     "handle_get_session",

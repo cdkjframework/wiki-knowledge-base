@@ -157,7 +157,9 @@ class EditionGateTests(unittest.TestCase):
         from src.commercial.edition import feature_enabled
 
         old = os.environ.get("KB_EDITION")
+        old_bypass = os.environ.get("KB_LICENSE_DEV_BYPASS")
         os.environ["KB_EDITION"] = "commercial"
+        os.environ["KB_LICENSE_DEV_BYPASS"] = "1"
         try:
             self.assertTrue(feature_enabled("KB-04"))
         finally:
@@ -165,6 +167,10 @@ class EditionGateTests(unittest.TestCase):
                 os.environ.pop("KB_EDITION", None)
             else:
                 os.environ["KB_EDITION"] = old
+            if old_bypass is None:
+                os.environ.pop("KB_LICENSE_DEV_BYPASS", None)
+            else:
+                os.environ["KB_LICENSE_DEV_BYPASS"] = old_bypass
 
     def test_community_disables_ocr_feature(self) -> None:
         from src.commercial.edition import feature_enabled, ocr_allowed
@@ -184,7 +190,9 @@ class EditionGateTests(unittest.TestCase):
         from src.commercial.edition import feature_enabled, ocr_allowed
 
         old = os.environ.get("KB_EDITION")
+        old_bypass = os.environ.get("KB_LICENSE_DEV_BYPASS")
         os.environ["KB_EDITION"] = "commercial"
+        os.environ["KB_LICENSE_DEV_BYPASS"] = "1"
         try:
             self.assertTrue(feature_enabled("KB-16"))
             self.assertTrue(ocr_allowed())
@@ -193,6 +201,10 @@ class EditionGateTests(unittest.TestCase):
                 os.environ.pop("KB_EDITION", None)
             else:
                 os.environ["KB_EDITION"] = old
+            if old_bypass is None:
+                os.environ.pop("KB_LICENSE_DEV_BYPASS", None)
+            else:
+                os.environ["KB_LICENSE_DEV_BYPASS"] = old_bypass
 
     def test_ocr_parser_forced_off_in_community(self) -> None:
         from pathlib import Path
@@ -221,7 +233,9 @@ class EditionGateTests(unittest.TestCase):
         from src.document_parsers.ocr_parser import create_ocr_parser
 
         old = os.environ.get("KB_EDITION")
+        old_bypass = os.environ.get("KB_LICENSE_DEV_BYPASS")
         os.environ["KB_EDITION"] = "commercial"
+        os.environ["KB_LICENSE_DEV_BYPASS"] = "1"
         try:
             parser = create_ocr_parser(
                 {"enabled": True, "engine": "paddleocr"},
@@ -244,6 +258,10 @@ class EditionGateTests(unittest.TestCase):
                 os.environ.pop("KB_EDITION", None)
             else:
                 os.environ["KB_EDITION"] = old
+            if old_bypass is None:
+                os.environ.pop("KB_LICENSE_DEV_BYPASS", None)
+            else:
+                os.environ["KB_LICENSE_DEV_BYPASS"] = old_bypass
 
 
     def test_community_disables_semantic_chunking(self) -> None:
@@ -264,7 +282,9 @@ class EditionGateTests(unittest.TestCase):
         from src.commercial.business.chunking import split_semantic
 
         old = os.environ.get("KB_EDITION")
+        old_bypass = os.environ.get("KB_LICENSE_DEV_BYPASS")
         os.environ["KB_EDITION"] = "commercial"
+        os.environ["KB_LICENSE_DEV_BYPASS"] = "1"
         try:
             text = (
                 "# 第一章\n"
@@ -287,6 +307,10 @@ class EditionGateTests(unittest.TestCase):
                 os.environ.pop("KB_EDITION", None)
             else:
                 os.environ["KB_EDITION"] = old
+            if old_bypass is None:
+                os.environ.pop("KB_LICENSE_DEV_BYPASS", None)
+            else:
+                os.environ["KB_LICENSE_DEV_BYPASS"] = old_bypass
 
     def test_semantic_chunk_requires_commercial(self) -> None:
         from src.commercial.business.chunking import split_semantic

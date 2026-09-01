@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * API 文档（纯 Vue 页，嵌在控制台布局内）。
+ * 接口文档（纯 Vue 页，嵌在控制台布局内）。
  */
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
 
@@ -294,6 +294,44 @@ const sections: SectionDoc[] = [
         ],
       },
       {
+        title: '3.6.1 指标看板（KB-11）',
+        endpoints: [
+          {
+            method: 'GET',
+            path: '/api/metrics',
+            params: ['limit (int, 可选，历史条数，默认 20)'],
+            sample: `{
+  "ok": true,
+  "available": true,
+  "kpis": [
+    {
+      "key": "recall@5",
+      "label": "Recall@5",
+      "value": 0.87,
+      "display": "0.870",
+      "target": 0.85,
+      "target_display": "≥ 0.85",
+      "status": "pass"
+    }
+  ],
+  "latest": { "generated_at": "...", "case_count": 64, "recall@5": 0.87 },
+  "history": []
+}`,
+          },
+          {
+            method: 'GET',
+            path: '/api/metrics/reports',
+            params: ['limit (int, 可选，默认 50)'],
+            sample: `{
+  "ok": true,
+  "reports": [
+    { "file": "report-20260831-214000.json", "generated_at": "...", "recall@5": 0.87 }
+  ]
+}`,
+          },
+        ],
+      },
+      {
         title: '3.7 清空知识库',
         endpoints: [
           {
@@ -439,7 +477,7 @@ const sections: SectionDoc[] = [
     intro: '以下接口依赖数据库后端；若未启用数据库，接口会返回不可用提示。',
     subsections: [
       {
-        title: '5.1 获取 Provider 列表',
+        title: '5.1 获取模型服务商列表',
         endpoints: [{ method: 'GET', path: '/api/model/providers' }],
       },
       {
@@ -489,7 +527,7 @@ const sections: SectionDoc[] = [
       'GET /retrieval-qa ：检索问答',
       'GET /kb/management ：知识库管理',
       'GET /model/management ：模型管理',
-      'GET /api-docs ：本 API 文档页',
+      'GET /api-docs ：本接口文档页',
       'GET /assets/* ：静态资源',
       'GET /health 或 /api/health ：探活',
     ],
@@ -508,7 +546,7 @@ function scrollTo(id: string) {
 <template>
   <div class="api-docs">
     <header class="api-docs__hero page-card">
-      <h1>API 文档</h1>
+      <h1>接口文档</h1>
       <p>接口一览与请求示例，便于本地调试和业务集成。业务路径统一前缀 <code>/api</code>。</p>
       <div class="api-docs__meta">
         <span class="api-docs__pill">Base URL</span>

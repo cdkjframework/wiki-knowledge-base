@@ -78,7 +78,7 @@ function onSelect(path: string) {
         </div>
         <div class="app-header__actions">
           <el-button text type="primary" @click="router.push('/login')">登录</el-button>
-          <el-button text type="primary" @click="router.push('/api-docs')">API 文档</el-button>
+          <el-button text type="primary" @click="router.push('/api-docs')">接口文档</el-button>
         </div>
       </el-header>
       <el-main class="app-main">

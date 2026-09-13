@@ -28,3 +28,10 @@
 # - 接口：GET /api/metrics（KPI + 最近一次 + 历史）、GET /api/metrics/reports（历史列表）
 # - 验收线覆盖（可选）：config.json 里加
 #   "metrics": { "targets": { "recall@5": 0.85, "recall@3": 0.75, "ndcg@10": 0.70, "latency_p95_ms": 300 } }
+#
+# 检索配置（KB-20，社商共有，v1.1.2）：
+# - 面板：控制台「知识库管理 → 检索与分片」；接口 GET/PUT /api/kb/settings
+# - 可热更新：search.default_k / max_search_results / min_source_similarity，
+#   knowledge_base.chunking.size / overlap（分片仅对新导入或重建生效）
+# - 默认建议：default_k=5、max_search_results=10、min_source_similarity=0（关闭硬阈）
+# - 评测：python -m src.eval.cli 省略 --top-k 时跟当前 default_k（并盖住指标所需 k）

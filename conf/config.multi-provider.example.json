@@ -6,8 +6,9 @@
     "port": 5000
   },
   "search": {
-    "default_k": 2,
-    "max_search_results": 3
+    "default_k": 5,
+    "max_search_results": 10,
+    "min_source_similarity": 0.0
   },
   "db": {
     "backend": "mysql",

@@ -1,18 +1,22 @@
 <script setup lang="ts">
 /**
- * 知识库管理：文档列表 / 文本导入 / 文件上传 / 分片查看。
+ * 知识库管理：文档列表 / 文本导入 / 文件上传 / 检索与分片配置 / 分片查看。
+ * KB-20：中间栏「检索与分片」可热更新参数，免重启。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   addDocumentText,
+  getKbSettings,
   listChunks,
   listDocuments,
   rebuildChunks,
   removeDocument,
+  updateKbSettings,
   uploadKbFile,
   type KbChunk,
   type KbDocument,
+  type KbSettings,
 } from '@/api/kb'
 import EditionGate from '@/components/commercial/EditionGate.vue'
 
@@ -27,6 +31,17 @@ const loadingChunks = ref(false)
 const textFilename = ref('note.md')
 const textContent = ref('')
 const uploading = ref(false)
+
+const settingsLoading = ref(false)
+const settingsSaving = ref(false)
+const settingsNotes = ref<KbSettings['notes']>({})
+const form = reactive({
+  default_k: 5,
+  max_search_results: 10,
+  min_source_similarity: 0,
+  chunk_size: 800,
+  chunk_overlap: 120,
+})
 
 const filteredDocs = computed(() => {
   const q = filter.value.trim().toLowerCase()
@@ -71,6 +86,43 @@ async function refreshChunks() {
 watch(selected, () => {
   refreshChunks()
 })
+
+async function loadSettings() {
+  settingsLoading.value = true
+  try {
+    const data = await getKbSettings()
+    const s = data.settings
+    form.default_k = s.default_k
+    form.max_search_results = s.max_search_results
+    form.min_source_similarity = s.min_source_similarity
+    form.chunk_size = s.chunk_size
+    form.chunk_overlap = s.chunk_overlap
+    settingsNotes.value = s.notes || {}
+  } catch (err) {
+    ElMessage.error((err as Error).message || '加载检索配置失败')
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+async function onSaveSettings() {
+  settingsSaving.value = true
+  try {
+    const data = await updateKbSettings({ ...form })
+    const s = data.settings
+    form.default_k = s.default_k
+    form.max_search_results = s.max_search_results
+    form.min_source_similarity = s.min_source_similarity
+    form.chunk_size = s.chunk_size
+    form.chunk_overlap = s.chunk_overlap
+    settingsNotes.value = s.notes || {}
+    ElMessage.success('已保存：检索参数立即生效；分片参数对新导入/重建生效')
+  } catch (err) {
+    ElMessage.error((err as Error).message || '保存失败')
+  } finally {
+    settingsSaving.value = false
+  }
+}
 
 async function onAddText() {
   const filename = textFilename.value.trim()
@@ -134,7 +186,10 @@ async function onRebuild(filename: string) {
   }
 }
 
-onMounted(refreshDocs)
+onMounted(() => {
+  refreshDocs()
+  loadSettings()
+})
 </script>
 
 <template>
@@ -178,6 +233,42 @@ onMounted(refreshDocs)
           <el-upload drag :show-file-list="false" :http-request="onUploadRequest" :disabled="uploading">
             <div class="el-upload__text">拖拽文件到此处，或<em>点击上传</em></div>
           </el-upload>
+        </el-tab-pane>
+        <el-tab-pane label="检索与分片">
+          <p class="hint">{{ settingsNotes?.search || '检索参数保存后立即生效，无需重启。' }}</p>
+          <p class="hint">{{ settingsNotes?.chunk || '分片参数仅对新导入或重建分片生效。' }}</p>
+          <el-form v-loading="settingsLoading" label-position="top" class="settings-form">
+            <div class="settings-grid">
+              <el-form-item label="默认召回数 default_k">
+                <el-input-number v-model="form.default_k" :min="1" :max="50" controls-position="right" />
+              </el-form-item>
+              <el-form-item label="最大召回数 max_search_results">
+                <el-input-number v-model="form.max_search_results" :min="1" :max="100" controls-position="right" />
+              </el-form-item>
+              <el-form-item label="来源相似度阈值 min_source_similarity">
+                <el-input-number
+                  v-model="form.min_source_similarity"
+                  :min="0"
+                  :max="1"
+                  :step="0.05"
+                  :precision="2"
+                  controls-position="right"
+                />
+              </el-form-item>
+              <el-form-item label="分片长度 chunk_size">
+                <el-input-number v-model="form.chunk_size" :min="100" :max="8000" :step="50" controls-position="right" />
+              </el-form-item>
+              <el-form-item label="分片重叠 chunk_overlap">
+                <el-input-number v-model="form.chunk_overlap" :min="0" :max="7999" :step="10" controls-position="right" />
+              </el-form-item>
+              <el-form-item label="分片策略">
+                <el-input model-value="固定长度（社区）" disabled />
+              </el-form-item>
+            </div>
+            <p class="hint subtle">{{ settingsNotes?.threshold || '阈值填 0 表示关闭硬过滤。' }}</p>
+            <el-button type="primary" :loading="settingsSaving" @click="onSaveSettings">保存并生效</el-button>
+            <el-button :disabled="settingsLoading || settingsSaving" @click="loadSettings">重新读取</el-button>
+          </el-form>
         </el-tab-pane>
       </el-tabs>
 
@@ -285,8 +376,30 @@ onMounted(refreshDocs)
   color: var(--color-text-secondary);
   font-size: 13px;
 }
+.hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+.hint.subtle {
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+}
+.settings-form :deep(.el-input-number) {
+  width: 100%;
+}
 @media (max-width: 1100px) {
   .kb-layout {
+    grid-template-columns: 1fr;
+  }
+  .settings-grid {
     grid-template-columns: 1fr;
   }
 }

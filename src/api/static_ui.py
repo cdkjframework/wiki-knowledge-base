@@ -29,6 +29,7 @@ _API_EXACT: frozenset[str] = frozenset(
         "/kb/files",
         "/kb/document",
         "/kb/chunks/rebuild",
+        "/kb/settings",
         "/model/configs",
         "/model/providers",
         "/model/config",
@@ -58,6 +59,7 @@ _KB_API_SEGMENTS: frozenset[str] = frozenset(
         "files",
         "document",
         "chunk",
+        "settings",
     }
 )
 

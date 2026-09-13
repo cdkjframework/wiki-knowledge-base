@@ -7,7 +7,7 @@ from urllib.parse import unquote
 
 
 def handle_get_kb(http: Any, api: Any, path: str) -> bool:
-    """处理 GET /kb/documents、/kb/chunks。"""
+    """处理 GET /kb/documents、/kb/chunks、/kb/settings。"""
     if path == "/kb/documents":
         http._ok(api.list_documents())
         return True
@@ -34,6 +34,11 @@ def handle_get_kb(http: Any, api: Any, path: str) -> bool:
             ),
             page_index=page_index,
         )
+        return True
+
+    if path == "/kb/settings":
+        # KB-20：当前生效的检索 / 分片参数（可读）
+        http._ok({"ok": True, "settings": api.get_retrieval_settings()})
         return True
 
     return False
@@ -126,7 +131,14 @@ def handle_post_kb(http: Any, api: Any, path: str, body: Dict[str, Any] | None =
 
 
 def handle_put_kb(http: Any, api: Any, path: str) -> bool:
-    """处理 PUT /kb/chunk/{id}。"""
+    """处理 PUT /kb/settings、/kb/chunk/{id}。"""
+    if path == "/kb/settings":
+        body = http._read_json()
+        page_index = http._page_index_from_body(body)
+        settings = api.update_retrieval_settings(body if isinstance(body, dict) else {})
+        http._ok({"ok": True, "settings": settings}, page_index=page_index)
+        return True
+
     if not path.startswith("/kb/chunk/"):
         return False
     chunk_id_raw = unquote(path[len("/kb/chunk/") :]).strip()

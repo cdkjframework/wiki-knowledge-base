@@ -332,6 +332,61 @@ class KnowledgeBaseApi:
             return 1.0
         return value
 
+    def get_retrieval_settings(self) -> Dict[str, Any]:
+        """KB-20：读取当前生效的检索 / 分片参数。"""
+        from ..kb.retrieval_settings import snapshot_from_runtime
+
+        return snapshot_from_runtime(self.kb, self._search_cfg)
+
+    def update_retrieval_settings(self, payload: Dict[str, Any] | None) -> Dict[str, Any]:
+        """
+        KB-20：校验并热更新检索 / 分片参数，同时写回 conf/config.json。
+        检索侧立刻影响 /api/query；分片侧对新导入与重建生效。
+        """
+        from ..kb.retrieval_settings import (
+            apply_settings_to_config,
+            apply_settings_to_runtime,
+            normalize_settings,
+            snapshot_from_runtime,
+        )
+
+        current = snapshot_from_runtime(self.kb, self._search_cfg)
+        settings = normalize_settings(payload, current=current)
+
+        config = self._load_project_config()
+        if not isinstance(config, dict):
+            config = {}
+        apply_settings_to_config(config, settings)
+
+        cfg_path = self._config_write_path()
+        try:
+            cfg_path.write_text(
+                json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            raise ValueError(f"写入配置失败：{exc}") from exc
+
+        if not isinstance(self._search_cfg, dict):
+            self._search_cfg = {}
+        apply_settings_to_runtime(self.kb, self._search_cfg, settings)
+        logger.info(
+            "KB-20 settings updated: default_k=%s max=%s min_sim=%s chunk=%s/%s",
+            settings["default_k"],
+            settings["max_search_results"],
+            settings["min_source_similarity"],
+            settings["chunk_size"],
+            settings["chunk_overlap"],
+        )
+        return snapshot_from_runtime(self.kb, self._search_cfg)
+
+    def default_search_k(self) -> int:
+        """查询未显式传 k 时使用的默认召回数。"""
+        try:
+            return max(1, int(getattr(self.kb, "default_k", 5) or 5))
+        except Exception:
+            return 5
+
     @staticmethod
     def _extract_thinking_summary(text: str) -> tuple[str, str | None]:
         start_tag = "<thinking_summary>"
@@ -1933,7 +1988,7 @@ class KnowledgeBaseApi:
     def query(
         self,
         query: str,
-        k: int = 2,
+        k: int | None = None,
         relevance_threshold: float | None = None,
         llm_model: str | None = None,
         model_config_id: int | None = None,
@@ -1947,6 +2002,8 @@ class KnowledgeBaseApi:
         deep_think: bool = False,
         enable_mcp_auto: bool = False,
     ) -> Dict[str, Any]:
+        if k is None:
+            k = self.default_search_k()
         if max_tokens is None:
             max_tokens = self._default_chat_max_tokens()
         
@@ -2092,7 +2149,7 @@ class KnowledgeBaseApi:
     def query_stream(
         self,
         query: str,
-        k: int = 2,
+        k: int | None = None,
         relevance_threshold: float | None = None,
         llm_model: str | None = None,
         model_config_id: int | None = None,
@@ -2106,6 +2163,8 @@ class KnowledgeBaseApi:
         deep_think: bool = False,
         enable_mcp_auto: bool = False,
     ) -> Dict[str, Any]:
+        if k is None:
+            k = self.default_search_k()
         if max_tokens is None:
             max_tokens = self._default_chat_max_tokens()
         req = {

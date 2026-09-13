@@ -51,7 +51,8 @@ def handle_get_query(http: Any, api: Any, path: str) -> bool:
         return True
 
     try:
-        k = int(params.get("k", ["2"])[-1])
+        k_raw = _last(params, "k")
+        k = api.default_search_k() if k_raw is None else int(k_raw)
     except Exception:
         http._bad_request("k 必须是整数")
         return True
@@ -196,7 +197,14 @@ def handle_post_query(http: Any, api: Any, path: str, body: Dict[str, Any]) -> b
         http._bad_request("deep_think 必须是布尔值")
         return True
 
-    k = int(body.get("k", 2))
+    if "k" not in body or body.get("k") is None:
+        k = api.default_search_k()
+    else:
+        try:
+            k = int(body.get("k"))
+        except Exception:
+            http._bad_request("k 必须是整数")
+            return True
     threshold_raw = body.get("relevance_threshold")
     relevance_threshold = None if threshold_raw is None else float(threshold_raw)
     llm_model = str(body.get("llm_model", "")).strip() or None

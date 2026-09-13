@@ -1,7 +1,7 @@
 /**
- * 知识库文档 / 分片 API。
+ * 知识库文档 / 分片 / 检索配置 API。
  */
-import { del, get, post } from '@/utils/request'
+import { del, get, post, put } from '@/utils/request'
 
 export interface KbDocument {
   filename: string
@@ -14,6 +14,21 @@ export interface KbChunk {
   filename?: string
   text?: string
   chunk_index?: number
+}
+
+/** KB-20：检索与固定长度分片参数 */
+export interface KbSettings {
+  default_k: number
+  max_search_results: number
+  min_source_similarity: number
+  chunk_size: number
+  chunk_overlap: number
+  chunking_strategy?: string
+  notes?: {
+    search?: string
+    chunk?: string
+    threshold?: string
+  }
 }
 
 export function listDocuments() {
@@ -45,4 +60,12 @@ export function removeDocument(filename: string) {
 
 export function rebuildChunks(filename: string) {
   return post<{ ok: boolean; chunks_added?: number }>('/kb/chunks/rebuild', { filename })
+}
+
+export function getKbSettings() {
+  return get<{ ok: boolean; settings: KbSettings }>('/kb/settings')
+}
+
+export function updateKbSettings(payload: Partial<KbSettings>) {
+  return put<{ ok: boolean; settings: KbSettings }>('/kb/settings', payload)
 }

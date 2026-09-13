@@ -5,6 +5,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createSession, streamQuery, type SourceResult } from '@/api/query'
+import { getKbSettings } from '@/api/kb'
 import { listModelConfigs, type ModelConfig } from '@/api/model'
 import { loadSessionId, loadUserId, saveSessionId, saveUserId } from '@/utils/session'
 
@@ -22,7 +23,9 @@ const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const userId = ref(loadUserId())
 const sessionId = ref(loadSessionId())
-const k = ref(2)
+/** 初始占位；挂载后从 KB-20 配置同步 default_k */
+const k = ref(5)
+const kMax = ref(20)
 const deepThink = ref(false)
 /** 空字符串表示走默认模型配置 */
 const modelConfigId = ref<string>('')
@@ -195,8 +198,23 @@ async function refreshModelOptions() {
   }
 }
 
+/** 从 KB-20 生效配置同步召回数，改完配置面板回来刷新页面即可对齐 */
+async function syncSearchDefaults() {
+  try {
+    const data = await getKbSettings()
+    const settings = data.settings
+    const max = Math.max(1, Number(settings.max_search_results) || 20)
+    kMax.value = Math.min(100, max)
+    const next = Math.max(1, Number(settings.default_k) || 5)
+    k.value = Math.min(next, kMax.value)
+  } catch {
+    // 配置接口失败时保留当前 k，不打断问答
+  }
+}
+
 onMounted(() => {
   refreshModelOptions()
+  syncSearchDefaults()
 })
 
 onBeforeUnmount(() => abortRef.value?.abort())
@@ -224,7 +242,14 @@ onBeforeUnmount(() => abortRef.value?.abort())
               :value="String(cfg.id)"
             />
           </el-select>
-          <el-input-number v-model="k" :min="1" :max="20" size="small" controls-position="right" />
+          <el-input-number
+            v-model="k"
+            :min="1"
+            :max="kMax"
+            size="small"
+            controls-position="right"
+            title="召回数（默认取自「知识库管理 → 检索与分片」）"
+          />
           <el-checkbox v-model="deepThink" :disabled="sending">深度思考</el-checkbox>
         </div>
         <div>

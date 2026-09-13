@@ -3,7 +3,7 @@
 
 用法：
   python -m src.eval.cli --validate                     只校验题集格式，不动知识库
-  python -m src.eval.cli                                用默认题集跑分并落报告
+  python -m src.eval.cli                                用默认题集跑分（--top-k 省略则跟 KB-20 default_k）
   python -m src.eval.cli --dataset my.jsonl --top-k 5
   python -m src.eval.cli --min-recall5 0.85 --min-ndcg10 0.70   达不到质量线就退出码 1
 """
@@ -31,6 +31,20 @@ def _parse_ks(raw: str) -> List[int]:
         raise ValueError("--ks 至少要有一个正整数")
     return sorted({v for v in values if v > 0})
 
+
+def _resolve_top_k(args_top_k: int | None, kb: Any, ks: List[int], ndcg_k: int) -> int:
+    """
+    未显式传 --top-k 时跟当前知识库 default_k（KB-20），
+    并至少盖住指标所需的 max(ks, ndcg_k)，避免 Recall@10 / NDCG@10 测不满。
+    """
+    if args_top_k is not None:
+        return max(1, int(args_top_k))
+    try:
+        default_k = max(1, int(getattr(kb, "default_k", 5) or 5))
+    except Exception:
+        default_k = 5
+    metric_need = max([ndcg_k, *ks]) if ks else int(ndcg_k)
+    return max(default_k, metric_need, 1)
 
 def _print_summary(report: Dict[str, Any]) -> None:
     summary = report["summary"]
@@ -78,7 +92,12 @@ def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="WIKI KB 检索评测集跑分（KB-10）")
     parser.add_argument("--dataset", default="", help="题集 JSONL 路径；默认用 conf/eval/golden-default.jsonl")
     parser.add_argument("--validate", action="store_true", help="只校验题集格式，不加载知识库")
-    parser.add_argument("--top-k", type=int, default=10, help="检索返回条数")
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="检索返回条数；省略则使用知识库 default_k，并至少覆盖 --ks/--ndcg-k",
+    )
     parser.add_argument("--ks", default=",".join(str(k) for k in DEFAULT_KS), help="Recall/Precision 的 k 列表")
     parser.add_argument("--ndcg-k", type=int, default=DEFAULT_NDCG_K, help="NDCG 的 k")
     parser.add_argument("--threshold", type=float, default=None, help="检索相关性阈值；不填表示不过滤")
@@ -119,16 +138,22 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     kb = KnowledgeBase(dimension=args.dimension, persist_dir=args.persist_dir)
+    top_k = _resolve_top_k(args.top_k, kb, ks, int(args.ndcg_k))
     report = run_evaluation(
         make_kb_searcher(kb, relevance_threshold=args.threshold),
         cases,
-        top_k=int(args.top_k),
+        top_k=top_k,
         ks=ks,
         ndcg_k=int(args.ndcg_k),
         dataset_path=dataset_path,
         extra_config={
             "relevance_threshold": args.threshold,
             "persist_dir": args.persist_dir or "",
+            "top_k_source": "cli" if args.top_k is not None else "kb_default",
+            "default_k": int(getattr(kb, "default_k", 0) or 0),
+            "chunk_size": int(getattr(kb, "chunk_size", 0) or 0),
+            "chunk_overlap": int(getattr(kb, "chunk_overlap", 0) or 0),
+            "max_search_results": int(getattr(kb, "max_search_results", 0) or 0),
         },
     )
 

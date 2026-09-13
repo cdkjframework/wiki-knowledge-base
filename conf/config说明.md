@@ -15,9 +15,9 @@
 
 ## search
 
-- `default_k`：默认返回的检索结果数（整数）
-- `max_search_results`：最大检索结果数（整数）
-- `min_source_similarity`：最小相似度阈值（小数，0~1）
+- `default_k`：默认返回的检索结果数（整数，建议 5～8；KB-20 可在页面热更新）
+- `max_search_results`：最大检索结果数（整数，建议 ≥10）
+- `min_source_similarity`：来源最小相似度硬阈值（0～1；`0` 表示关闭硬过滤，便于长尾召回对比实验）
 
 ## db
 

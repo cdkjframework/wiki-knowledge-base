@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledge-base"
-version = "1.1.1"
+version = "1.1.2"
 description = "Local-first knowledge base service with vector search and conversational QA"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -96,8 +96,22 @@ except ImportError:  # pragma: no cover
 
 try:
     from ..knowledge_base import KnowledgeBase
+    from ..chat.refusal import INSUFFICIENT_EVIDENCE_ANSWER
+    from ..kb.evidence_gate import (
+        STATUS_INSUFFICIENT,
+        STATUS_SUFFICIENT,
+        EvidencePolicy,
+        evaluate_evidence,
+    )
 except ImportError:  # pragma: no cover
     from knowledge_base import KnowledgeBase
+    from chat.refusal import INSUFFICIENT_EVIDENCE_ANSWER
+    from kb.evidence_gate import (
+        STATUS_INSUFFICIENT,
+        STATUS_SUFFICIENT,
+        EvidencePolicy,
+        evaluate_evidence,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +214,7 @@ class KnowledgeBaseApi:
         self._session_store: SessionIdStore = self._init_session_store()
         self._model_config_manager: ModelConfigManager | None = self._init_model_config_manager()
         self._mcp_manager: McpConfigManager | None = self._init_mcp_manager()
+        self._kb_settings_store = self._init_kb_settings_store()
         config = self._load_project_config()
         self._ensure_default_system_intro(config)
         self._search_cfg = config.get("search", {})
@@ -215,7 +230,50 @@ class KnowledgeBaseApi:
         self._lm_studio_cfg = config.get("knowledge_base", {}).get("lm_studio", {})
         if not isinstance(self._lm_studio_cfg, dict):
             self._lm_studio_cfg = {}
+        self._apply_default_retrieval_models()
+        # DB 里的检索设置优先于 conf（含匹配度阈值）
+        self._apply_retrieval_settings_from_db()
         self._resync_mcp_documents()
+
+    def _apply_default_retrieval_models(self) -> None:
+        """启动时：若 DB 里有 embedding/rerank/chat 默认配置，覆盖 conf 落到运行时。"""
+        if not self._model_config_manager:
+            return
+        for kind in ("embedding", "rerank", "chat"):
+            try:
+                cfg = self._model_config_manager.store.get_default_config(model_type=kind)
+                if not cfg:
+                    continue
+                if kind in {"embedding", "rerank"}:
+                    result = self.kb.apply_retrieval_backend(
+                        kind=kind,
+                        provider=str(cfg.get("provider") or ""),
+                        model_name=str(cfg.get("model_name") or ""),
+                        base_url=str(cfg.get("base_url") or "") or None,
+                        api_key=cfg.get("api_key"),
+                        dimension=cfg.get("dimension"),
+                        timeout=cfg.get("timeout"),
+                    )
+                else:
+                    result = self.kb.apply_chat_backend(
+                        provider=str(cfg.get("provider") or ""),
+                        model_name=str(cfg.get("model_name") or ""),
+                        base_url=str(cfg.get("base_url") or "") or None,
+                        api_key=cfg.get("api_key"),
+                        timeout=cfg.get("timeout"),
+                        temperature=cfg.get("temperature"),
+                        max_tokens=cfg.get("max_tokens"),
+                    )
+                logger.info(
+                    "Startup apply %s default: ok=%s model=%s backend=%s warnings=%s",
+                    kind,
+                    result.get("ok"),
+                    result.get("model"),
+                    result.get("backend"),
+                    result.get("warnings"),
+                )
+            except Exception as exc:
+                logger.warning("Startup apply %s default failed: %s", kind, exc)
 
     @staticmethod
     def _now_iso() -> str:
@@ -320,17 +378,17 @@ class KnowledgeBaseApi:
                 return deepseek_limit
         return value
 
-    def _min_source_similarity(self) -> float:
+    def _min_source_similarity(self, override: float | None = None) -> float:
+        if override is not None:
+            try:
+                return max(0.0, min(1.0, float(override)))
+            except Exception:
+                pass
         raw = self._search_cfg.get("min_source_similarity", 0.0)
         try:
-            value = float(raw)
+            return max(0.0, min(1.0, float(raw or 0.0)))
         except Exception:
             return 0.0
-        if value < 0.0:
-            return 0.0
-        if value > 1.0:
-            return 1.0
-        return value
 
     def get_retrieval_settings(self) -> Dict[str, Any]:
         """KB-20：读取当前生效的检索 / 分片参数。"""
@@ -340,7 +398,8 @@ class KnowledgeBaseApi:
 
     def update_retrieval_settings(self, payload: Dict[str, Any] | None) -> Dict[str, Any]:
         """
-        KB-20：校验并热更新检索 / 分片参数，同时写回 conf/config.json。
+        KB-20：校验并热更新检索 / 分片参数。
+        有数据库时写入 kb_app_settings（权威来源）；同时镜像 conf/config.json。
         检索侧立刻影响 /api/query；分片侧对新导入与重建生效。
         """
         from ..kb.retrieval_settings import (
@@ -353,11 +412,21 @@ class KnowledgeBaseApi:
         current = snapshot_from_runtime(self.kb, self._search_cfg)
         settings = normalize_settings(payload, current=current)
 
+        # 1) 优先落库（匹配度阈值等用户设置需要跨重启保留）
+        persisted_db = False
+        if self._kb_settings_store is not None:
+            try:
+                self._kb_settings_store.set_retrieval_settings(settings)
+                persisted_db = True
+            except Exception as exc:
+                logger.error("写入库内检索设置失败: %s", exc)
+                raise ValueError(f"写入数据库失败：{exc}") from exc
+
+        # 2) 镜像 conf，便于无库/备份；库写入成功时文件失败不阻断热更新
         config = self._load_project_config()
         if not isinstance(config, dict):
             config = {}
         apply_settings_to_config(config, settings)
-
         cfg_path = self._config_write_path()
         try:
             cfg_path.write_text(
@@ -365,18 +434,23 @@ class KnowledgeBaseApi:
                 encoding="utf-8",
             )
         except Exception as exc:
-            raise ValueError(f"写入配置失败：{exc}") from exc
+            if not persisted_db:
+                raise ValueError(f"写入配置失败：{exc}") from exc
+            logger.warning("检索设置已写入数据库，但镜像 conf 失败: %s", exc)
 
         if not isinstance(self._search_cfg, dict):
             self._search_cfg = {}
         apply_settings_to_runtime(self.kb, self._search_cfg, settings)
         logger.info(
-            "KB-20 settings updated: default_k=%s max=%s min_sim=%s chunk=%s/%s",
+            "KB-20 settings updated: default_k=%s max=%s min_sim=%s chunk=%s/%s hybrid=%s rrf_k=%s db=%s",
             settings["default_k"],
             settings["max_search_results"],
             settings["min_source_similarity"],
             settings["chunk_size"],
             settings["chunk_overlap"],
+            settings["hybrid_enabled"],
+            settings["rrf_k"],
+            persisted_db,
         )
         return snapshot_from_runtime(self.kb, self._search_cfg)
 
@@ -1007,6 +1081,124 @@ class KnowledgeBaseApi:
             logger.error(f"Failed to initialize model config manager: {exc}")
             return None
 
+    def _init_kb_settings_store(self):
+        """检索/分片设置落库；与模型配置共用同一套 DB。无库时返回 None，回退 conf。"""
+        try:
+            from ..store.db.kb_settings_store import KbSettingsStore
+        except Exception:
+            from store.db.kb_settings_store import KbSettingsStore  # type: ignore
+
+        if self._model_config_manager is not None:
+            try:
+                store = KbSettingsStore(self._model_config_manager.store.db)
+                logger.info("KB settings store: shared with model config DB")
+                return store
+            except Exception as exc:
+                logger.error("Failed to init KB settings store from model DB: %s", exc)
+
+        # 模型管理未开库时，仍尝试独立连一次（与 history 同源配置）
+        config = self._load_project_config()
+        db_cfg = config.get("db", {})
+        if not isinstance(db_cfg, dict):
+            db_cfg = {}
+        backend_raw = os.getenv("KB_HISTORY_BACKEND") or db_cfg.get("backend") or "memory"
+        backend = str(backend_raw or "").strip().lower()
+        if backend in {"", "memory", "in_memory", "none"}:
+            logger.info("KB settings store: disabled (memory backend)")
+            return None
+        if backend == "postgres":
+            backend = "postgresql"
+        if backend not in {"mysql", "postgresql"}:
+            return None
+        db_type_key = "mysql" if backend == "mysql" else "postgresql"
+        db_type_cfg = db_cfg.get(db_type_key, {})
+        if not isinstance(db_type_cfg, dict):
+            db_type_cfg = {}
+        default_port = 3306 if backend == "mysql" else 5432
+        env_prefix = "KB_HISTORY_MYSQL_" if backend == "mysql" else "KB_HISTORY_PG_"
+        try:
+            db_connection = DatabaseConnection(
+                backend=backend,
+                host=str(os.getenv(env_prefix + "HOST") or db_type_cfg.get("host", "127.0.0.1")),
+                port=int(os.getenv(env_prefix + "PORT") or db_type_cfg.get("port", default_port)),
+                user=str(os.getenv(env_prefix + "USER") or db_type_cfg.get("user", "")),
+                password=str(os.getenv(env_prefix + "PASSWORD") or db_type_cfg.get("password", "")),
+                database=str(
+                    os.getenv(env_prefix + "DATABASE") or db_type_cfg.get("database", "knowledge_base")
+                ),
+                connect_timeout=int(
+                    os.getenv(env_prefix + "CONNECT_TIMEOUT") or db_type_cfg.get("connect_timeout", 5)
+                ),
+                client_encoding=str(
+                    os.getenv(env_prefix + "CLIENT_ENCODING") or db_type_cfg.get("client_encoding") or ""
+                )
+                or None,
+                options=str(os.getenv(env_prefix + "OPTIONS") or db_type_cfg.get("options") or "")
+                or None,
+                auto_create_database=self._parse_bool(
+                    os.getenv("KB_DB_AUTO_CREATE_DATABASE")
+                    if os.getenv("KB_DB_AUTO_CREATE_DATABASE") is not None
+                    else db_cfg.get("auto_create_database", False),
+                    default=False,
+                ),
+            )
+            store = KbSettingsStore(db_connection)
+            logger.info("KB settings store: %s", backend)
+            return store
+        except Exception as exc:
+            logger.error("Failed to initialize KB settings store: %s", exc)
+            return None
+
+    def _apply_retrieval_settings_from_db(self) -> None:
+        """启动时：库内检索设置优先；若库为空则用 conf 当前值灌一条，方便后续只改库。"""
+        if self._kb_settings_store is None:
+            return
+        try:
+            from ..kb.retrieval_settings import (
+                SETTING_KEYS,
+                apply_settings_to_runtime,
+                normalize_settings,
+                snapshot_from_runtime,
+            )
+        except Exception:
+            from kb.retrieval_settings import (  # type: ignore
+                SETTING_KEYS,
+                apply_settings_to_runtime,
+                normalize_settings,
+                snapshot_from_runtime,
+            )
+        try:
+            stored = self._kb_settings_store.get_retrieval_settings()
+        except Exception as exc:
+            logger.warning("读取库内检索设置失败，沿用 conf: %s", exc)
+            return
+
+        current = snapshot_from_runtime(self.kb, self._search_cfg)
+        if not stored:
+            # 首次：把 conf/运行时快照写入库，之后用户改阈值只动数据库
+            try:
+                seed = {k: current[k] for k in SETTING_KEYS if k in current}
+                self._kb_settings_store.set_retrieval_settings(
+                    normalize_settings(seed, current=current)
+                )
+                logger.info("Seeded retrieval settings into DB from conf")
+            except Exception as exc:
+                logger.warning("首次写入库内检索设置失败: %s", exc)
+            return
+
+        try:
+            settings = normalize_settings(stored, current=current)
+            if not isinstance(self._search_cfg, dict):
+                self._search_cfg = {}
+            apply_settings_to_runtime(self.kb, self._search_cfg, settings)
+            logger.info(
+                "Applied retrieval settings from DB: min_sim=%s default_k=%s",
+                settings.get("min_source_similarity"),
+                settings.get("default_k"),
+            )
+        except Exception as exc:
+            logger.warning("应用库内检索设置失败，沿用 conf: %s", exc)
+
     def _init_mcp_manager(self) -> McpConfigManager | None:
         config = self._load_project_config()
         db_cfg = config.get("db", {})
@@ -1231,7 +1423,7 @@ class KnowledgeBaseApi:
             _log_selected_model(cfg, source=f"name:{str(model_config_name).strip()}", requested_model=llm_model, effective_model=model)
             return client, model
 
-        cfg = self._model_config_manager.store.get_default_config()
+        cfg = self._model_config_manager.store.get_default_config(model_type="chat")
         if not cfg:
             raise RuntimeError(
                 "未配置默认模型。请在模型管理中创建并设置默认模型，或在请求中传 model_config_id/model_config_name。"
@@ -1597,6 +1789,192 @@ class KnowledgeBaseApi:
         if dist < 0:
             dist = 0.0
         return 1.0 / (1.0 + dist)
+
+    @staticmethod
+    def _score_strength_label(similarity: float) -> str:
+        """
+        把合成分翻译成人话档位。
+
+        合成分很少到 0.9+（向量×0.35 + 重排×0.65），别拿「1.000=完美匹配」糊弄人。
+        """
+        sim = float(similarity)
+        if sim >= 0.75:
+            return "较强"
+        if sim >= 0.60:
+            return "一般"
+        return "较弱"
+
+    def _consume_search_details(self) -> Dict[str, Dict[str, Any]]:
+        """按文件名取最近一次 search 的分项分数；读完即清，避免串到下次请求。"""
+        details = list(getattr(self.kb, "_last_search_details", None) or [])
+        try:
+            self.kb._last_search_details = []
+        except Exception:
+            pass
+        out: Dict[str, Dict[str, Any]] = {}
+        for item in details:
+            name = str(item.get("filename") or "").strip()
+            if name and name not in out:
+                out[name] = dict(item)
+        return out
+
+    def _build_source_result_items(
+        self,
+        raw: Sequence[tuple[str, str, float]],
+        *,
+        min_similarity: float,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        组装问答上下文 + 前端来源列表（证据门槛之前的候选）。
+
+        各通道分数原样透传：vector_similarity 只在确有向量余弦时有值，bm25_score 是原始词法分，
+        rerank_similarity 是重排概率。similarity 是内部排序分，不是正确率。
+        relative_similarity / score_label 仅为旧接口兼容保留，前端不再拿它们当主分数。
+        """
+        detail_map = self._consume_search_details()
+        ranked_results: List[Dict[str, Any]] = []
+        pending: List[Dict[str, Any]] = []
+
+        def _opt(value: Any, digits: int = 4) -> float | None:
+            if value is None:
+                return None
+            try:
+                return round(float(value), digits)
+            except (TypeError, ValueError):
+                return None
+
+        for fn, text, distance_raw in raw:
+            distance = max(0.0, float(distance_raw))
+            similarity = self._distance_to_similarity(distance)
+            if similarity < min_similarity:
+                continue
+            chunk_text = str(text or "")
+            detail = detail_map.get(str(fn)) or {}
+            final_sim = detail.get("final_similarity")
+            if final_sim is None:
+                final_sim = similarity
+            try:
+                final_sim_f = float(final_sim)
+            except (TypeError, ValueError):
+                final_sim_f = float(similarity)
+            vector_sim = detail.get("vector_similarity", detail.get("embed_similarity"))
+            ranked_results.append(
+                {"filename": fn, "text": chunk_text, "score": final_sim_f}
+            )
+            pending.append(
+                {
+                    "distance": round(float(distance), 4),
+                    "filename": str(fn),
+                    "similarity": round(final_sim_f, 4),
+                    "vector_similarity": _opt(vector_sim),
+                    "vector_score_source": detail.get("vector_score_source"),
+                    "embed_similarity": _opt(vector_sim),
+                    "bm25_score": _opt(detail.get("bm25_score")),
+                    "rerank_raw": _opt(detail.get("rerank_raw")),
+                    "rerank_similarity": _opt(detail.get("rerank_similarity")),
+                    "rerank_status": detail.get("rerank_status"),
+                    "channels": list(detail.get("channels") or []),
+                    "score_label": self._score_strength_label(final_sim_f),
+                    "text": chunk_text,
+                    "preview_text": chunk_text[:240],
+                }
+            )
+
+        self._assign_source_ranks(pending)
+        return ranked_results, pending
+
+    @staticmethod
+    def _assign_source_ranks(items: List[Dict[str, Any]]) -> None:
+        """名次与兼容用的相对分；门槛过滤后要重新编号，所以单独拎出来。"""
+        peak = max((float(item["similarity"]) for item in items), default=0.0)
+        for rank, item in enumerate(items, start=1):
+            sim = float(item["similarity"])
+            relative = 1.0 if peak <= 1e-12 else max(0.0, min(1.0, sim / peak))
+            item["rank"] = rank
+            item["relative_similarity"] = round(relative, 4)
+
+    def _evidence_policy(self) -> EvidencePolicy:
+        policy = getattr(self.kb, "evidence_policy", None)
+        return policy if isinstance(policy, EvidencePolicy) else EvidencePolicy()
+
+    def _apply_evidence_gate(
+        self,
+        query: str,
+        ranked_results: List[Dict[str, Any]],
+        result_items: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any]:
+        """
+        不可绕过的最终证据判定：放在阈值回退之后、生成之前。
+
+        被拒的候选只写日志，不进答案上下文、不作为「知识来源」展示。
+        """
+        decision = evaluate_evidence(query, result_items, self._evidence_policy())
+        keep = {id(item) for item in decision.passed}
+        gated_ranked = [
+            ctx for ctx, item in zip(ranked_results, result_items) if id(item) in keep
+        ]
+        gated_items = [item for item in result_items if id(item) in keep]
+        for item in decision.rejected:
+            evidence = item.get("evidence") or {}
+            logger.info(
+                "证据门槛拒绝来源: file=%s reason=%s vector=%s rerank=%s rerank_status=%s channels=%s",
+                item.get("filename"),
+                evidence.get("reason"),
+                item.get("vector_similarity"),
+                item.get("rerank_similarity"),
+                item.get("rerank_status"),
+                item.get("channels"),
+            )
+        self._assign_source_ranks(gated_items)
+        return gated_ranked, gated_items, decision
+
+    def _retrieve_sources(
+        self,
+        query: str,
+        k: int,
+        relevance_threshold: float | None,
+        min_source_similarity: float | None,
+    ) -> Dict[str, Any]:
+        """
+        普通 / 流式问答共用的取证入口：阈值检索（含回退）→ 候选过滤 → 证据门槛。
+
+        两条路径必须走同一个函数，否则很容易一边修了门槛、另一边还在放行无关来源。
+        """
+        raw, effective_threshold, threshold_relaxed = self._search_with_threshold_fallback(
+            query=query,
+            k=k,
+            relevance_threshold=relevance_threshold,
+        )
+        min_similarity = self._min_source_similarity(min_source_similarity)
+        ranked_results, result_items = self._build_source_result_items(
+            raw, min_similarity=min_similarity
+        )
+        ranked_results, result_items, decision = self._apply_evidence_gate(
+            query, ranked_results, result_items
+        )
+        logger.debug(
+            "取证完成: raw=%d passed=%d rejected=%d entities=%s min_similarity=%s",
+            len(raw),
+            len(result_items),
+            len(decision.rejected),
+            decision.entities,
+            min_similarity,
+        )
+        return {
+            "ranked_results": ranked_results,
+            "result_items": result_items,
+            "effective_threshold": effective_threshold,
+            "threshold_relaxed": bool(threshold_relaxed),
+            "evidence_status": decision.status,
+        }
+
+    @staticmethod
+    def _final_evidence_status(has_sources: bool, has_mcp: bool) -> str:
+        if has_sources:
+            return STATUS_SUFFICIENT
+        if has_mcp:
+            return "mcp_only"
+        return STATUS_INSUFFICIENT
 
     def _search_with_threshold_fallback(
         self,
@@ -2001,6 +2379,7 @@ class KnowledgeBaseApi:
         session_id: str | None = None,
         deep_think: bool = False,
         enable_mcp_auto: bool = False,
+        min_source_similarity: float | None = None,
     ) -> Dict[str, Any]:
         if k is None:
             k = self.default_search_k()
@@ -2039,40 +2418,16 @@ class KnowledgeBaseApi:
         }
         try:
             logger.debug("开始执行知识库检索...")
-            raw, effective_threshold, threshold_relaxed = self._search_with_threshold_fallback(
+            sources = self._retrieve_sources(
                 query=query,
                 k=k,
                 relevance_threshold=relevance_threshold,
+                min_source_similarity=min_source_similarity,
             )
-            logger.debug("检索到 %d 个原始结果", len(raw))
-            min_similarity = self._min_source_similarity()
-            logger.debug("来源最小相似度阈值: %s", min_similarity)
-            
-            ranked_results = []
-            result_items = []
-            for idx, (fn, text, distance_raw) in enumerate(raw):
-                logger.debug("处理检索结果 #%d: filename=%s, distance=%.4f", idx, fn, distance_raw)
-                distance = max(0.0, float(distance_raw))
-                similarity = self._distance_to_similarity(distance)
-                if similarity < min_similarity:
-                    logger.debug(
-                        "过滤低相似度结果: filename=%s similarity=%.4f < min_source_similarity=%.4f",
-                        fn,
-                        similarity,
-                        min_similarity,
-                    )
-                    continue
-                chunk_text = str(text or "")
-                ranked_results.append({"filename": fn, "text": chunk_text, "score": similarity})
-                result_items.append(
-                    {
-                        "distance": round(float(distance), 4),
-                        "filename": str(fn),
-                        "similarity": round(float(similarity), 4),
-                        "text": chunk_text,
-                        "preview_text": chunk_text[:240],
-                    }
-                )
+            ranked_results = sources["ranked_results"]
+            result_items = sources["result_items"]
+            effective_threshold = sources["effective_threshold"]
+            threshold_relaxed = sources["threshold_relaxed"]
             mcp_execution = None
             if enable_mcp_auto:
                 mcp_execution = self._maybe_execute_mcp_for_chat(
@@ -2093,8 +2448,15 @@ class KnowledgeBaseApi:
             logger.debug("构建聊天提示词...")
             system_prompt, user_prompt = self._build_chat_prompts(query, ranked_results, deep_think=deep_think)
             logger.debug("系统提示词长度: %d, 用户提示词长度: %d", len(system_prompt), len(user_prompt))
-            
-            if generate_answer:
+            evidence_status = self._final_evidence_status(bool(result_items), bool(mcp_execution))
+
+            if generate_answer and not ranked_results:
+                # 没有任何可靠证据：服务端直接拒答，不让生成模型自由发挥
+                logger.info("无可靠证据，返回确定性拒答")
+                answer = INSUFFICIENT_EVIDENCE_ANSWER
+                thinking = None
+                thinking_summary = None
+            elif generate_answer:
                 logger.debug("开始生成答案，使用 %d 个检索结果", len(ranked_results))
                 answer, thinking, thinking_summary = self._answer_from_lm_studio(
                     question=query,
@@ -2135,6 +2497,7 @@ class KnowledgeBaseApi:
                 "thinking_summary": thinking_summary,
                 "relevance_threshold": effective_threshold,
                 "threshold_relaxed": bool(threshold_relaxed),
+                "evidence_status": evidence_status,
                 "mcp_execution": mcp_execution,
                 "messages": messages,
             }
@@ -2162,6 +2525,7 @@ class KnowledgeBaseApi:
         session_id: str | None = None,
         deep_think: bool = False,
         enable_mcp_auto: bool = False,
+        min_source_similarity: float | None = None,
     ) -> Dict[str, Any]:
         if k is None:
             k = self.default_search_k()
@@ -2186,30 +2550,16 @@ class KnowledgeBaseApi:
             "deep_think": bool(deep_think),
             "enable_mcp_auto": bool(enable_mcp_auto),
         }
-        raw, effective_threshold, threshold_relaxed = self._search_with_threshold_fallback(
+        sources = self._retrieve_sources(
             query=query,
             k=k,
             relevance_threshold=relevance_threshold,
+            min_source_similarity=min_source_similarity,
         )
-        min_similarity = self._min_source_similarity()
-        ranked_results = []
-        result_items = []
-        for fn, text, distance_raw in raw:
-            distance = max(0.0, float(distance_raw))
-            similarity = self._distance_to_similarity(distance)
-            if similarity < min_similarity:
-                continue
-            chunk_text = str(text or "")
-            ranked_results.append({"filename": fn, "text": chunk_text, "score": similarity})
-            result_items.append(
-                {
-                    "distance": round(float(distance), 4),
-                    "filename": str(fn),
-                    "similarity": round(float(similarity), 4),
-                    "text": chunk_text,
-                    "preview_text": chunk_text[:240],
-                }
-            )
+        ranked_results = sources["ranked_results"]
+        result_items = sources["result_items"]
+        effective_threshold = sources["effective_threshold"]
+        threshold_relaxed = sources["threshold_relaxed"]
 
         mcp_execution = None
         if enable_mcp_auto:
@@ -2226,7 +2576,14 @@ class KnowledgeBaseApi:
         history_messages = self._load_chat_context(user_id, session_id)
         logger.info("上下文=%s", history_messages)
         system_prompt, user_prompt = self._build_chat_prompts(query, ranked_results, deep_think=deep_think)
-        if generate_answer:
+        evidence_status = self._final_evidence_status(bool(result_items), bool(mcp_execution))
+        fixed_answer: str | None = None
+        if generate_answer and not ranked_results:
+            # 与普通接口同一口径：无证据直接拒答，SSE 仍按 meta / delta / done 输出
+            logger.info("无可靠证据，流式返回确定性拒答")
+            fixed_answer = INSUFFICIENT_EVIDENCE_ANSWER
+            thinking_summary = None
+        elif generate_answer:
             stream, thinking_summary = self._answer_stream_from_lm_studio(
                 question=query,
                 results=ranked_results,
@@ -2251,6 +2608,8 @@ class KnowledgeBaseApi:
             "thinking_summary": thinking_summary,
             "relevance_threshold": effective_threshold,
             "threshold_relaxed": bool(threshold_relaxed),
+            "evidence_status": evidence_status,
+            "fixed_answer": fixed_answer,
             "mcp_execution": mcp_execution,
         }
 
@@ -2363,6 +2722,79 @@ class KnowledgeBaseApi:
             return {"ok": True, "chunks_removed": int(removed)}
         except Exception:
             raise
+
+    def get_document_original(self, filename: str, prefer_text: bool = False) -> Dict[str, Any]:
+        """读取 documents/ 下原文件：文本预览或二进制下载。"""
+        if self._is_internal_mcp_filename(filename):
+            raise ValueError("内部 MCP 配置文档不可查看原文件")
+        path = self.kb.get_original_path(filename)
+        if path is None:
+            raise FileNotFoundError(filename)
+        data = path.read_bytes()
+        name = path.name
+        suffix = path.suffix.lower()
+        text_suffixes = {
+            ".txt",
+            ".md",
+            ".markdown",
+            ".json",
+            ".csv",
+            ".yml",
+            ".yaml",
+            ".xml",
+            ".html",
+            ".htm",
+            ".py",
+            ".js",
+            ".ts",
+            ".css",
+            ".log",
+            ".ini",
+            ".conf",
+            ".cfg",
+        }
+        is_text = suffix in text_suffixes
+        content_type = "application/octet-stream"
+        if suffix == ".pdf":
+            content_type = "application/pdf"
+        elif suffix in {".docx"}:
+            content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif suffix in {".xlsx"}:
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif is_text:
+            content_type = "text/plain; charset=utf-8"
+            if suffix == ".md":
+                content_type = "text/markdown; charset=utf-8"
+            elif suffix == ".json":
+                content_type = "application/json; charset=utf-8"
+            elif suffix in {".html", ".htm"}:
+                content_type = "text/html; charset=utf-8"
+
+        result: Dict[str, Any] = {
+            "filename": name,
+            "size": len(data),
+            "is_text": is_text,
+            "content_type": content_type,
+            "path": str(path),
+        }
+        if prefer_text or is_text:
+            text = ""
+            for enc in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
+                try:
+                    text = data.decode(enc)
+                    break
+                except Exception:
+                    continue
+            # 二进制误判时仍给下载用字段
+            if text or is_text:
+                result["content"] = text
+                result["is_text"] = True
+            else:
+                result["is_text"] = False
+                result["content_bytes"] = data
+        else:
+            result["content_bytes"] = data
+        return result
 
     def get_knowledge_base_stats(self) -> Dict[str, Any]:
         stats = self.kb.stats()

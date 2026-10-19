@@ -32,6 +32,9 @@ const menus = computed(() => {
 
 const pageTitle = computed(() => (route.meta.title as string) || appStore.title)
 
+/** 检索问答页要钉住输入框，主内容区禁止整页滚动 */
+const isChatPage = computed(() => route.path.startsWith('/retrieval-qa'))
+
 function onSelect(path: string) {
   if (path !== route.path) {
     router.push(path)
@@ -81,7 +84,7 @@ function onSelect(path: string) {
           <el-button text type="primary" @click="router.push('/api-docs')">接口文档</el-button>
         </div>
       </el-header>
-      <el-main class="app-main">
+      <el-main class="app-main" :class="{ 'app-main--chat': isChatPage }">
         <router-view />
       </el-main>
     </el-container>

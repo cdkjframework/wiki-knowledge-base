@@ -1,0 +1,7 @@
+{
+  "_comment": "实体别名：查询里出现左边的缩写/编号时，证据正文或文件名出现任一别名也算「实体命中」。键和别名都不区分大小写。路径可用 knowledge_base.retrieval.evidence.aliases_file 覆盖。",
+  "aliases": {
+    "PMP": ["项目管理专业人士", "Project Management Professional"],
+    "RAG": ["检索增强生成", "Retrieval-Augmented Generation"]
+  }
+}

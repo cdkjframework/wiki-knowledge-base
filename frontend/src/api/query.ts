@@ -10,14 +10,49 @@ export interface QueryBody {
   session_id?: string
   generate_answer?: boolean
   relevance_threshold?: number | null
+  /** 候选过滤线（0~1，比较内部排序分）；0 表示不过滤。最终来源仍要过证据门槛 */
+  min_source_similarity?: number | null
   model_config_id?: number
   use_default_model_config?: boolean
   enable_mcp_auto?: boolean
 }
 
+/** sufficient：有通过证据判定的来源；insufficient：无可靠来源（已确定性拒答）；mcp_only：仅 MCP 结果 */
+export type EvidenceStatus = 'sufficient' | 'insufficient' | 'mcp_only'
+
+export interface SourceEvidence {
+  passed?: boolean
+  /** 放行依据：rerank / vector / vector_strong / rerank_strict / vector_strict / disabled */
+  basis?: string
+  reason?: string
+  entity_matched?: boolean | null
+}
+
 export interface SourceResult {
   filename?: string
+  /** 内部排序分（向量余弦与重排概率加权），只用于排序和候选过滤，不是正确率 */
   similarity?: number
+  /** @deprecated 本批相对分（第 1 名恒为 1.00），仅为旧接口兼容保留，前端不再展示 */
+  relative_similarity?: number
+  /** 向量余弦；只被 BM25 捞到且无法确认向量模型一致时为 null */
+  vector_similarity?: number | null
+  /** ann：向量通道召回；computed：为 BM25 候选补算 */
+  vector_score_source?: string | null
+  /** @deprecated 同 vector_similarity，旧字段 */
+  embed_similarity?: number | null
+  /** BM25 原始词法分，量纲与余弦不同，不能和其它分数直接比 */
+  bm25_score?: number | null
+  rerank_raw?: number | null
+  /** 重排概率（0~1） */
+  rerank_similarity?: number | null
+  /** ok / failed / disabled */
+  rerank_status?: string | null
+  /** 候选来自哪些召回通道：vector / bm25 */
+  channels?: string[]
+  evidence?: SourceEvidence
+  /** @deprecated 基于未校准合成分的档位，前端不再展示 */
+  score_label?: string
+  rank?: number
   distance?: number
   text?: string
   preview_text?: string
@@ -29,6 +64,7 @@ export interface StreamHandlers {
     session_id?: string
     user_id?: string
     mcp_execution?: unknown
+    evidence_status?: EvidenceStatus
   }) => void
   onDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
@@ -37,6 +73,7 @@ export interface StreamHandlers {
     thinking?: string
     thinking_summary?: string
     finish_reason?: string
+    evidence_status?: EvidenceStatus
   }) => void
   signal?: AbortSignal
 }

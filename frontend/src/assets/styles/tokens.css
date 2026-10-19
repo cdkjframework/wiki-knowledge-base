@@ -1,34 +1,46 @@
 :root {
-  /* Stripe 派生令牌（对齐 deliverables/prototype/design-spec.md） */
-  --color-primary: #635bff;
-  --color-primary-hover: #5451e5;
-  --color-primary-active: #4a47cc;
-  --color-primary-subtle: #eeeffe;
-  --color-link: #4a47cc;
+  /* 控制台浅蓝企业风（对齐模型管理设计稿） */
+  --color-primary: #2f6bff;
+  --color-primary-hover: #1f5aef;
+  --color-primary-active: #1849d6;
+  --color-primary-subtle: #eaf1ff;
+  --color-link: #1f5aef;
   --color-bg: #ffffff;
-  --color-bg-subtle: #f6f9fc;
+  --color-bg-subtle: #f5f8fc;
   --color-surface: #ffffff;
-  --color-border: #e3e8ee;
-  --color-border-strong: #cdd5df;
-  --color-text-primary: #0a2540;
-  --color-text-secondary: #425466;
-  --color-text-tertiary: #697386;
-  --color-success: #0a8754;
-  --color-warning: #b54708;
-  --color-danger: #c2410c;
+  --color-border: #e6edf5;
+  --color-border-strong: #cfd9e6;
+  --color-text-primary: #1a2332;
+  --color-text-secondary: #5a6b7f;
+  --color-text-tertiary: #8a97a8;
+  --color-success: #12b76a;
+  --color-warning: #f79009;
+  --color-danger: #f04438;
 
-  --color-edition-locked-bg: #f1f3f6;
-  --color-edition-locked-fg: #8792a2;
+  --color-edition-locked-bg: #f1f4f8;
+  --color-edition-locked-fg: #8896a6;
   --color-edition-locked-text: #5a6675;
+
+  --radius-card: 16px;
+  --radius-control: 10px;
+  --shadow-card: 0 1px 2px rgba(26, 35, 50, 0.04), 0 4px 16px rgba(47, 107, 255, 0.06);
 
   /* Element Plus 主题映射 */
   --el-color-primary: var(--color-primary);
+  --el-color-primary-light-3: #6b95ff;
+  --el-color-primary-light-5: #97b5ff;
+  --el-color-primary-light-7: #c3d4ff;
+  --el-color-primary-light-8: #d9e5ff;
+  --el-color-primary-light-9: var(--color-primary-subtle);
+  --el-color-primary-dark-2: var(--color-primary-active);
   --el-color-success: var(--color-success);
   --el-color-warning: var(--color-warning);
   --el-color-danger: var(--color-danger);
   --el-border-color: var(--color-border);
   --el-text-color-primary: var(--color-text-primary);
+  --el-text-color-regular: var(--color-text-secondary);
   --el-bg-color-page: var(--color-bg-subtle);
+  --el-border-radius-base: 8px;
 }
 
 html,

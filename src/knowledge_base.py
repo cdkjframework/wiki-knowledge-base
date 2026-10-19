@@ -30,8 +30,10 @@ import torch
 
 try:
     from .lm_studio_client import LmStudioClient
+    from .universal_llm_client import UniversalLLMClient
 except ImportError:  # pragma: no cover
     from lm_studio_client import LmStudioClient
+    from universal_llm_client import UniversalLLMClient
 try:
     from .chat_model import ChatModel
 except ImportError:  # pragma: no cover
@@ -40,6 +42,16 @@ try:
     from .document_parsers import BaseDocumentParser, KnowledgeBaseDocumentParser
 except ImportError:  # pragma: no cover
     from document_parsers import BaseDocumentParser, KnowledgeBaseDocumentParser
+try:
+    from .kb.bm25_index import Bm25Index, build_bm25
+    from .kb.evidence_gate import EvidencePolicy
+    from .kb.hybrid import rrf_fuse
+    from .kb.query_terms import load_aliases_file
+except ImportError:  # pragma: no cover
+    from kb.bm25_index import Bm25Index, build_bm25
+    from kb.evidence_gate import EvidencePolicy
+    from kb.hybrid import rrf_fuse
+    from kb.query_terms import load_aliases_file
 logger = logging.getLogger(__name__)
 
 # transformers/huggingface_hub old call paths still pass resume_download.
@@ -401,14 +413,26 @@ class KnowledgeBase:
             "max_search_results", search_cfg.get("max_search_results", 2)
         )
         cfg_candidate_multiplier = retrieval_cfg.get(
-            "candidate_multiplier", kb_cfg.get("candidate_multiplier", 8)
+            "candidate_multiplier", kb_cfg.get("candidate_multiplier", 4)
         )
         cfg_min_candidates = retrieval_cfg.get(
-            "min_candidates", kb_cfg.get("min_candidates", 30)
+            "min_candidates", kb_cfg.get("min_candidates", 16)
         )
         cfg_embed_weight = retrieval_cfg.get("embed_weight", kb_cfg.get("embed_weight", 0.35))
         cfg_rerank_weight = retrieval_cfg.get(
             "rerank_weight", kb_cfg.get("rerank_weight", 0.65)
+        )
+        # KB-01：混合检索开关与 RRF 常数；search 与 retrieval 都可读，面板以 search 为准
+        cfg_hybrid_enabled = search_cfg.get(
+            "hybrid_enabled",
+            retrieval_cfg.get("hybrid_enabled", kb_cfg.get("hybrid_enabled", True)),
+        )
+        cfg_rrf_k = search_cfg.get(
+            "rrf_k", retrieval_cfg.get("rrf_k", kb_cfg.get("rrf_k", 60))
+        )
+        cfg_max_rerank = search_cfg.get(
+            "max_rerank_candidates",
+            retrieval_cfg.get("max_rerank_candidates", kb_cfg.get("max_rerank_candidates", 8)),
         )
         cfg_release_gpu_cache = memory_cfg.get("release_gpu_cache", False)
         cfg_unload_idle_seconds = memory_cfg.get("unload_models_idle_seconds", 0)
@@ -435,7 +459,27 @@ class KnowledgeBase:
             self.vector_backend = "faiss"
         self._vector_backend_specified = bool(vector_backend_specified)
         self.cleanup_legacy_index_on_migrate = bool(cfg_cleanup_legacy_index_on_migrate)
+        if self.vector_backend == "zvec" and zvec is None:
+            logger.warning(
+                "Configured vector_backend=zvec but package unavailable; using faiss"
+            )
+            self.vector_backend = "faiss"
         self.index_path = self._index_path_for_backend(self.vector_backend)
+        self.documents_dir = self.persist_dir / "documents"
+        # 历史 zvec Collection 目录占坑时挪开，避免 faiss 误写
+        if self.vector_backend != "zvec":
+            stale = self.persist_dir / "index.zvec"
+            if stale.is_dir():
+                bak = self.persist_dir / "index.zvec.legacy"
+                try:
+                    if bak.exists():
+                        import shutil
+
+                        shutil.rmtree(bak, ignore_errors=True)
+                    stale.rename(bak)
+                    logger.info("Moved stale zvec dir aside: %s -> %s", stale, bak)
+                except Exception as exc:
+                    logger.warning("Could not move stale zvec dir %s: %s", stale, exc)
 
         self.embedding_model_name = embedding_model or os.getenv("KB_EMBED_MODEL", cfg_embed)
         self.reranker_model_name = reranker_model or os.getenv("KB_RERANK_MODEL", cfg_rerank)
@@ -463,6 +507,22 @@ class KnowledgeBase:
         else:
             self.embed_weight /= total_weight
             self.rerank_weight /= total_weight
+        self.hybrid_enabled = bool(cfg_hybrid_enabled)
+        try:
+            self.rrf_k = max(1, int(cfg_rrf_k))
+        except (TypeError, ValueError):
+            self.rrf_k = 60
+        try:
+            self.max_rerank_candidates = max(1, int(cfg_max_rerank))
+        except (TypeError, ValueError):
+            self.max_rerank_candidates = 8
+        try:
+            self.max_rerank_chunks_per_file = max(
+                1, int(retrieval_cfg.get("max_rerank_chunks_per_file", 3))
+            )
+        except (TypeError, ValueError):
+            self.max_rerank_chunks_per_file = 3
+        self.evidence_policy = self._load_evidence_policy(retrieval_cfg, project_root)
 
         if local_files_only is None:
             if isinstance(cfg_local_only, bool):
@@ -487,26 +547,18 @@ class KnowledgeBase:
                     self.local_files_only, cfg_local_only)
         self._configure_hf_offline_mode()
 
-        # Detect AMD ROCm availability (torch ROCm exposes cuda API via HIP)
-        def _torch_has_rocm() -> bool:
-            try:
-                return bool(getattr(torch.version, "hip", None))
-            except Exception:
-                return False
-
-        _rocm_available = _torch_has_rocm() and torch.cuda.is_available()
-        _cuda_available = torch.cuda.is_available() and not _rocm_available
-
-        if device:
-            self.device = device
-        else:
-            if str(cfg_device).lower() == "auto":
-                if _cuda_available or _rocm_available:
-                    self.device = "cuda"  # both NVIDIA CUDA and AMD ROCm surface as "cuda"
-                else:
-                    self.device = "cpu"
-            else:
-                self.device = str(cfg_device)
+        # 设备：cuda / cpu / directml / auto（DirectML 见 src/device_runtime.py）
+        env_device = (os.getenv("KB_DEVICE") or "").strip()
+        requested = device if device else (env_device or cfg_device or "auto")
+        try:
+            from .device_runtime import resolve_torch_device
+        except ImportError:  # pragma: no cover
+            from device_runtime import resolve_torch_device
+        try:
+            self.device_label, self.device = resolve_torch_device(str(requested))
+        except RuntimeError as exc:
+            logger.warning("%s；回退 CPU", exc)
+            self.device_label, self.device = "cpu", "cpu"
 
         logger.info(
             "Torch runtime: version=%s cuda_build=%s cuda_available=%s rocm_build=%s device_count=%s",
@@ -514,21 +566,21 @@ class KnowledgeBase:
             torch.version.cuda,
             torch.cuda.is_available(),
             getattr(torch.version, "hip", None),
-            torch.cuda.device_count(),
+            torch.cuda.device_count() if torch.cuda.is_available() else 0,
         )
-        if str(cfg_device).lower() == "auto" and self.device == "cpu":
+        if self.device_label == "cpu" and str(requested).lower() in {"auto", "directml", "dml"}:
             if torch.version.cuda is None and getattr(torch.version, "hip", None) is None:
                 logger.warning(
-                    "No GPU available: current torch build is CPU-only (%s). "
-                    "For NVIDIA: pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121 ; "
-                    "For AMD ROCm: pip install --force-reinstall torch==2.2.2 --index-url https://download.pytorch.org/whl/rocm6.0",
+                    "No CUDA/ROCm GPU. Current torch=%s. "
+                    "Windows iGPU 可用独立环境启用 DirectML：python -m venv .venv-dml && "
+                    ".venv-dml\\Scripts\\pip install -r requirements.directml.txt ；"
+                    "然后 KB_DEVICE=directml 启动。ORT 已检测到 DML 仅作硬件探测，不替代 HF 推理。",
                     torch.__version__,
                 )
         logger.info(
-            "Inference device selected: %s (cuda_available=%s rocm=%s)",
+            "Inference device selected: label=%s device=%s",
+            self.device_label,
             self.device,
-            torch.cuda.is_available(),
-            _rocm_available,
         )
 
         lm_base = (os.getenv("LM_STUDIO_BASE_URL") or cfg_lm_base or "").strip()
@@ -599,7 +651,10 @@ class KnowledgeBase:
 
         self._chunks: List[_Chunk] = []
         self._embeddings = np.zeros((0, 1), dtype=np.float32)
+        # 持久化向量是哪个 embedding 模型算的；和当前模型对不上时不能拿来算余弦
+        self._index_embedding_model: str | None = None
         self._index = None
+        self._bm25: Bm25Index | None = None
         self._faiss_gpu_resources = None
         self._faiss_use_gpu = self._should_use_faiss_gpu()
         self.release_gpu_cache = bool(cfg_release_gpu_cache)
@@ -791,9 +846,143 @@ class KnowledgeBase:
             return repo_dir.resolve()
         return None
 
+    def list_local_hf_models(self, kind: str | None = None) -> Dict[str, Any]:
+        """扫描 model_cache_dir 下已缓存的 HF 仓库，供 Embedding/Rerank 本地选择。"""
+        kind_norm = str(kind or "").strip().lower()
+        if kind_norm in {"embed", "embedding"}:
+            kind_norm = "embedding"
+        elif kind_norm in {"rerank", "reranker"}:
+            kind_norm = "rerank"
+        else:
+            kind_norm = ""
+
+        # HuggingFace 本地仅放行 Qwen3 Embedding / Reranker 固定版本
+        allowed = {
+            "Qwen/Qwen3-Embedding-0.6B": ("embedding", "Qwen3-Embedding-0.6B"),
+            "Qwen/Qwen3-Embedding-4B": ("embedding", "Qwen3-Embedding-4B"),
+            "Qwen/Qwen3-Embedding-8B": ("embedding", "Qwen3-Embedding-8B"),
+            "Qwen/Qwen3-Reranker-0.6B": ("rerank", "Qwen3-Reranker-0.6B"),
+            "Qwen/Qwen3-Reranker-4B": ("rerank", "Qwen3-Reranker-4B"),
+            "Qwen/Qwen3-Reranker-8B": ("rerank", "Qwen3-Reranker-8B"),
+        }
+        presets = [
+            {
+                "id": mid,
+                "label": label,
+                "kinds": [kind_name],
+                "recommended": True,
+            }
+            for mid, (kind_name, label) in allowed.items()
+        ]
+
+        cache_dir = Path(self.model_cache_dir)
+        scan_dirs = [cache_dir]
+        parent = cache_dir.parent
+        if parent.name.lower() == "models" or (parent / "models").exists():
+            alt = parent if parent.name.lower() == "models" else parent / "models"
+            if alt.exists() and alt.resolve() != cache_dir.resolve():
+                scan_dirs.append(alt.resolve())
+
+        cached_ids: set[str] = set()
+        for root in scan_dirs:
+            try:
+                entries = list(root.iterdir())
+            except Exception:
+                continue
+            for entry in entries:
+                name = entry.name
+                if not entry.is_dir() or not name.startswith("models--"):
+                    continue
+                repo_id = name[len("models--") :].replace("--", "/")
+                if repo_id in allowed:
+                    cached_ids.add(repo_id)
+
+        models: List[Dict[str, Any]] = []
+        for p in presets:
+            item = dict(p)
+            item["cached"] = item["id"] in cached_ids
+            models.append(item)
+
+        if kind_norm:
+            models = [m for m in models if kind_norm in (m.get("kinds") or [])]
+
+        return {
+            "ok": True,
+            "cache_dir": str(cache_dir),
+            "kind": kind_norm or None,
+            "models": models,
+            "count": len(models),
+            "allowed_ids": list(allowed.keys()),
+        }
+
     @staticmethod
     def _filename_key(name: str | None) -> str:
         return KnowledgeBase._normalize_filename(name).lower()
+
+    def _safe_original_path(self, filename: str) -> Path:
+        """原文件只落在 documents/ 下，文件名取 basename，防路径穿越。"""
+        name = Path(self._normalize_filename(filename)).name
+        if not name or name in {".", ".."}:
+            raise ValueError("invalid original filename")
+        base = self.documents_dir.resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        target = (base / name).resolve()
+        if not str(target).startswith(str(base)):
+            raise ValueError("invalid original filename")
+        return target
+
+    def save_original_bytes(self, filename: str, content: bytes) -> str:
+        """保存上传原文件到 persist_dir/documents。"""
+        path = self._safe_original_path(filename)
+        path.write_bytes(bytes(content or b""))
+        return str(path)
+
+    def save_original_text(self, filename: str, text: str, encoding: str = "utf-8") -> str:
+        """文本导入时同步落一份原文件，便于日后查看。"""
+        path = self._safe_original_path(filename)
+        path.write_text(str(text or ""), encoding=encoding)
+        return str(path)
+
+    def get_original_path(self, filename: str) -> Path | None:
+        try:
+            path = self._safe_original_path(filename)
+        except ValueError:
+            return None
+        return path if path.is_file() else None
+
+    def delete_original(self, filename: str) -> bool:
+        path = self.get_original_path(filename)
+        if path is None:
+            return False
+        try:
+            path.unlink()
+            return True
+        except Exception:
+            logger.warning("删除原文件失败: %s", path, exc_info=True)
+            return False
+
+    def original_meta(self, filename: str) -> Dict[str, Any]:
+        path = self.get_original_path(filename)
+        if path is None:
+            return {
+                "has_original": False,
+                "original_size": 0,
+                "original_name": None,
+                "mtime": 0.0,
+            }
+        try:
+            st = path.stat()
+            size = int(st.st_size)
+            mtime = float(st.st_mtime)
+        except Exception:
+            size = 0
+            mtime = 0.0
+        return {
+            "has_original": True,
+            "original_size": size,
+            "original_name": path.name,
+            "mtime": mtime,
+        }
 
     @staticmethod
     def _load_project_config() -> Dict[str, Any]:
@@ -821,6 +1010,72 @@ class KnowledgeBase:
         return vectors / norms
 
     @staticmethod
+    def _load_evidence_policy(retrieval_cfg: Dict[str, Any], project_root: Path) -> EvidencePolicy:
+        """证据门槛参数 + 实体别名文件；别名文件缺失就当没有，不影响启动。"""
+        evidence_cfg = retrieval_cfg.get("evidence") if isinstance(retrieval_cfg, dict) else None
+        evidence_cfg = evidence_cfg if isinstance(evidence_cfg, dict) else {}
+        aliases_file = str(
+            evidence_cfg.get("aliases_file") or "conf/retrieval/entity_aliases.json"
+        ).strip()
+        alias_path = Path(aliases_file)
+        if not alias_path.is_absolute():
+            alias_path = project_root / alias_path
+        return EvidencePolicy.from_config(evidence_cfg, aliases=load_aliases_file(alias_path))
+
+    _MIXED_EMBEDDING_MODEL = "__mixed__"
+
+    @staticmethod
+    def _canonical_model_key(name: Any) -> str:
+        """
+        把 embedding 模型名归一成可比较的键。
+
+        同一个模型在 HF（Qwen/Qwen3-Embedding-0.6B）、LM Studio（text-embedding-qwen3-embedding-0.6b）、
+        本地路径下写法不同；只做保守归一，对不上就当「无法确认」，绝不据此删索引。
+        """
+        text = str(name or "").strip().lower().replace("\\", "/").rstrip("/")
+        if not text:
+            return ""
+        text = text.split("/")[-1]
+        if text.startswith("text-embedding-"):
+            text = text[len("text-embedding-") :]
+        text = re.split(r"[@:]", text, maxsplit=1)[0]
+        return re.sub(r"[^a-z0-9.]+", "-", text).strip("-")
+
+    def embedding_consistency(self) -> str:
+        """
+        持久化向量与当前 embedding 模型是否一致。
+
+        verified：确认同一模型；unverified：名字对不上或混入了多个模型；empty：库里没有向量。
+        """
+        embeddings = getattr(self, "_embeddings", None)
+        if embeddings is None or getattr(embeddings, "size", 0) == 0:
+            return "empty"
+        stored = getattr(self, "_index_embedding_model", None)
+        if not stored or stored == self._MIXED_EMBEDDING_MODEL:
+            return "unverified"
+        current = getattr(self, "embedding_model_name", None)
+        a = self._canonical_model_key(stored)
+        b = self._canonical_model_key(current)
+        return "verified" if a and a == b else "unverified"
+
+    def _note_vectors_written(self, rows_before: int) -> None:
+        """新向量写入后更新「向量出自哪个模型」；往旧库里追加了别的模型就标记为混合。"""
+        current = str(getattr(self, "embedding_model_name", "") or "")
+        stored = getattr(self, "_index_embedding_model", None)
+        if rows_before <= 0 or not stored:
+            self._index_embedding_model = current or None
+            return
+        if stored == self._MIXED_EMBEDDING_MODEL:
+            return
+        if self._canonical_model_key(stored) != self._canonical_model_key(current):
+            logger.warning(
+                "向量库混入了不同 embedding 模型的向量: stored=%s current=%s；建议重建向量索引",
+                stored,
+                current,
+            )
+            self._index_embedding_model = self._MIXED_EMBEDDING_MODEL
+
+    @staticmethod
     def _sigmoid(x: float) -> float:
         if x >= 0:
             z = math.exp(-x)
@@ -830,8 +1085,12 @@ class KnowledgeBase:
 
     def _save(self) -> None:
         self.persist_dir.mkdir(parents=True, exist_ok=True)
+        if self._embeddings.size == 0:
+            self._index_embedding_model = None
         meta = {
             "embedding_model": self.embedding_model_name,
+            # embedding_model 记的是「当前配置」，换模型不重建也会被覆盖；这里记向量真正出自谁
+            "index_embedding_model": self._index_embedding_model,
             "reranker_model": self.reranker_model_name,
             "dimension": self.dimension,
             "vector_backend": self.vector_backend,
@@ -841,6 +1100,9 @@ class KnowledgeBase:
             "min_candidates": self.min_candidates,
             "embed_weight": self.embed_weight,
             "rerank_weight": self.rerank_weight,
+            "hybrid_enabled": self.hybrid_enabled,
+            "rrf_k": self.rrf_k,
+            "max_rerank_candidates": self.max_rerank_candidates,
         }
         self.meta_path.write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -859,19 +1121,29 @@ class KnowledgeBase:
         np.save(self.embeddings_path, self._embeddings)
         if self._index is None:
             return
+        # zvec Collection 会把 index.zvec 建成目录；若已回退 faiss，绝不能再往该目录写文件
         if self.vector_backend == "zvec" and zvec is not None:
             try:
                 self._save_zvec_index(self._index)
                 return
             except Exception as exc:
                 logger.warning("Save zvec index failed, fallback to faiss persistence path: %s", exc)
-        if faiss is not None:
+                self._switch_vector_backend("faiss")
+        if faiss is not None and not isinstance(self._index, _NumpyIndexFlatIP):
+            save_path = self._index_path_for_backend("faiss")
+            # 旧 zvec 目录占坑时，确保写到真正的 faiss 文件
+            if save_path.exists() and save_path.is_dir():
+                logger.warning(
+                    "FAISS index path is a directory (%s), writing to index.faiss.bak file name",
+                    save_path,
+                )
+                save_path = self.persist_dir / "index.faiss"
             idx_to_save = self._index
-            # GPU index cannot be serialized directly; persist as CPU index.
             if self._faiss_use_gpu and hasattr(faiss, "index_gpu_to_cpu"):
                 idx_to_save = faiss.index_gpu_to_cpu(self._index)
             try:
-                faiss.write_index(idx_to_save, str(self.index_path))
+                faiss.write_index(idx_to_save, str(save_path))
+                self.index_path = save_path
             except Exception as exc:
                 logger.warning("Save faiss index failed: %s", exc)
 
@@ -889,6 +1161,9 @@ class KnowledgeBase:
             meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
             if not self.dimension and meta.get("dimension"):
                 self.dimension = int(meta["dimension"])
+            # 老 meta 没有 index_embedding_model，只能拿当时的 embedding_model 当最佳猜测
+            stored_model = meta.get("index_embedding_model") or meta.get("embedding_model")
+            self._index_embedding_model = str(stored_model) if stored_model else None
             meta_backend = str(meta.get("vector_backend") or "").strip().lower()
             if meta_backend in {"faiss", "zvec", "numpy"}:
                 # If user explicitly configured backend in config, keep config value;
@@ -940,6 +1215,7 @@ class KnowledgeBase:
             self._chunks = []
             self._embeddings = np.zeros((0, self.dimension), dtype=np.float32)
             self._index = None
+            self._rebuild_bm25()
             self._save()
             return
 
@@ -995,6 +1271,9 @@ class KnowledgeBase:
                     loaded = False
             if not loaded:
                 self._rebuild_index()
+            else:
+                # 向量索引可从磁盘复用；BM25 仅内存，启动时必须重建
+                self._rebuild_bm25()
         else:
             self._rebuild_index()
 
@@ -1010,6 +1289,7 @@ class KnowledgeBase:
         if vecs.ndim != 2 or vecs.shape[0] != len(texts):
             raise RuntimeError("Embedding rebuild failed: shape mismatch")
         self._embeddings = vecs.astype(np.float32, copy=False)
+        self._note_vectors_written(0)
         self.dimension = int(self._embeddings.shape[1])
         self._rebuild_index()
 
@@ -1390,7 +1670,7 @@ class KnowledgeBase:
 
     def _embed_texts(self, texts: Sequence[str], batch_size: int = 16) -> np.ndarray:
         summary = self._summarize_texts(texts)
-        logger.info(
+        logger.debug(
             "Embedding input: model=%s count=%s avg_len=%s max_len=%s use_lm_studio=%s",
             self.embedding_model_name,
             summary["count"],
@@ -1402,7 +1682,7 @@ class KnowledgeBase:
             vecs = self._lm_client.embed_texts(texts, model=self.embedding_model_name)
             if vecs.shape[0] > 0 and self.dimension is None:
                 self.dimension = int(vecs.shape[1])
-            logger.info(
+            logger.debug(
                 "Embedding output: model=%s vectors=%s dim=%s",
                 self.embedding_model_name,
                 vecs.shape[0],
@@ -1447,7 +1727,7 @@ class KnowledgeBase:
         vectors = self._normalize_rows(vectors)
         if vectors.shape[0] > 0 and self.dimension is None:
             self.dimension = int(vectors.shape[1])
-        logger.info(
+        logger.debug(
             "Embedding output: model=%s vectors=%s dim=%s",
             self.embedding_model_name,
             vectors.shape[0],
@@ -1457,7 +1737,7 @@ class KnowledgeBase:
 
     def _rerank_scores(self, query: str, docs: Sequence[str], batch_size: int = 8) -> List[float]:
         summary = self._summarize_texts(docs)
-        logger.info(
+        logger.debug(
             "Rerank input: model=%s docs=%s avg_doc_len=%s max_doc_len=%s query_len=%s use_lm_studio=%s",
             self.reranker_model_name,
             summary["count"],
@@ -1475,14 +1755,16 @@ class KnowledgeBase:
                 query, docs, model=self.reranker_model_name
             )
             if scores is not None:
-                logger.info(
+                logger.debug(
                     "Rerank output: model=%s scores=%s min=%s max=%s",
                     self.reranker_model_name,
                     len(scores),
                     min(scores) if scores else None,
                     max(scores) if scores else None,
                 )
+                self._last_rerank_scale = "remote"
                 return scores
+        self._last_rerank_scale = "logit"
         self._ensure_reranker_model()
         self._touch_model("reranker")
         scores: List[float] = []
@@ -1539,7 +1821,7 @@ class KnowledgeBase:
                 else:
                     batch_scores = batch_scores[: len(batch_docs)]
             scores.extend(batch_scores)
-        logger.info(
+        logger.debug(
             "Rerank output: model=%s scores=%s min=%s max=%s",
             self.reranker_model_name,
             len(scores),
@@ -1548,18 +1830,47 @@ class KnowledgeBase:
         )
         return scores
 
+    def _rerank_probabilities(self, raw_scores: Sequence[float]) -> List[float]:
+        """
+        把重排原始分换算成 0～1 的相关概率。
+
+        远程 /rerank（Jina/Cohere 风格）给的 relevance_score 本来就是概率，
+        以前一律再套 sigmoid，结果任何候选都 ≥0.5，门槛形同虚设；本地交叉编码器给的是 logit，才需要 sigmoid。
+        """
+        values = [float(x) for x in raw_scores]
+        scale = str(getattr(self, "_last_rerank_scale", "logit") or "logit")
+        if scale == "remote" and values and all(0.0 <= v <= 1.0 for v in values):
+            return values
+        return [self._sigmoid(v) for v in values]
+
+    def _rebuild_bm25(self) -> None:
+        """按当前分片重建稀疏索引；空库也建空索引，避免 search 分支判空绕弯。"""
+        try:
+            texts = [c.text for c in self._chunks]
+            self._bm25 = build_bm25(texts)
+            logger.debug("BM25 index rebuilt: docs=%s", len(texts))
+        except Exception:
+            logger.exception("BM25 rebuild failed; hybrid channel will degrade")
+            self._bm25 = None
+
     def _rebuild_index(self) -> None:
         if self.dimension is None:
             self.dimension = 1024
         backend = self.vector_backend
         if backend == "zvec" and zvec is None:
-            logger.warning("vector_backend=zvec but zvec is unavailable, fallback to faiss/numpy")
+            # 配置写了 zvec 但未安装：必须改 self.vector_backend / index_path，
+            # 否则 _save 会往 index.zvec 目录里写 faiss 文件 → Permission denied
+            logger.warning(
+                "vector_backend=zvec but zvec is unavailable, fallback to faiss/numpy"
+            )
+            self._switch_vector_backend("faiss")
             backend = "faiss"
         if backend == "zvec":
             dim = int(self.dimension if self._embeddings.size == 0 else self._embeddings.shape[1])
             self._index = self._build_zvec_index(dim)
             if self._embeddings.size > 0:
                 self._index.add(self._embeddings.astype(np.float32, copy=False))
+            self._rebuild_bm25()
             return
         if self._embeddings.size == 0:
             if faiss is not None:
@@ -1567,6 +1878,7 @@ class KnowledgeBase:
                 self._index = self._to_faiss_gpu_index(cpu_index)
             else:
                 self._index = _NumpyIndexFlatIP(int(self.dimension))
+            self._rebuild_bm25()
             return
         if faiss is not None:
             cpu_index = faiss.IndexFlatIP(int(self._embeddings.shape[1]))
@@ -1574,6 +1886,32 @@ class KnowledgeBase:
         else:
             self._index = _NumpyIndexFlatIP(int(self._embeddings.shape[1]))
         self._index.add(self._embeddings.astype(np.float32, copy=False))
+        self._rebuild_bm25()
+
+    def _switch_vector_backend(self, backend: str) -> None:
+        """运行时切换向量后端，并同步持久化路径（避免写到错误的 index.*）。"""
+        name = str(backend or "faiss").strip().lower()
+        if name not in {"faiss", "zvec", "numpy"}:
+            name = "faiss"
+        if name == "zvec" and zvec is None:
+            name = "faiss"
+        prev = getattr(self, "vector_backend", None)
+        self.vector_backend = name
+        self.index_path = self._index_path_for_backend(name)
+        # zvec Collection 是目录；回退 faiss 后把它挪开，避免再往目录写文件
+        if name == "faiss" and prev == "zvec":
+            stale = self.persist_dir / "index.zvec"
+            if stale.is_dir():
+                bak = self.persist_dir / "index.zvec.legacy"
+                try:
+                    if bak.exists():
+                        import shutil
+
+                        shutil.rmtree(bak, ignore_errors=True)
+                    stale.rename(bak)
+                    logger.info("Moved stale zvec dir aside: %s -> %s", stale, bak)
+                except Exception as exc:
+                    logger.warning("Could not move stale zvec dir %s: %s", stale, exc)
 
     def _build_zvec_index(self, dimension: int) -> Any:
         if zvec is None:
@@ -1626,7 +1964,7 @@ class KnowledgeBase:
     def _should_use_faiss_gpu(self) -> bool:
         if faiss is None:
             return False
-        if self.device != "cuda":
+        if self.device_label != "cuda":
             return False
         env = str(os.getenv("KB_FAISS_USE_GPU") or "").strip().lower()
         if env in {"0", "false", "no", "off"}:
@@ -1683,6 +2021,14 @@ class KnowledgeBase:
         self._embeddings = np.zeros((0, int(self.dimension)), dtype=np.float32)
         self._rebuild_index()
         self._save()
+        # 清空原文件目录
+        try:
+            if self.documents_dir.exists():
+                for child in self.documents_dir.iterdir():
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("清空 documents 目录失败", exc_info=True)
 
     def remove_document(self, filename: str) -> int:
         """
@@ -1733,6 +2079,10 @@ class KnowledgeBase:
 
         self._rebuild_index()
         self._save()
+        try:
+            self.delete_original(filename_norm)
+        except Exception:
+            pass
         return removed
 
     def list_documents(self) -> List[Dict[str, Any]]:
@@ -1769,18 +2119,37 @@ class KnowledgeBase:
             ]
         """
         by_name: Dict[str, Dict[str, Any]] = {}
-        for chunk in self._chunks:
+        for idx, chunk in enumerate(self._chunks):
             item = by_name.get(chunk.filename)
             if item is None:
+                meta = self.original_meta(chunk.filename)
                 item = {
                     "filename": chunk.filename,
                     "chunk_count": 0,
                     "char_count": 0,
+                    "has_original": bool(meta.get("has_original")),
+                    "original_size": int(meta.get("original_size") or 0),
+                    # 有原文件用 mtime；否则用末次分片下标近似「最近写入」
+                    "updated_at": float(meta.get("mtime") or 0.0),
+                    "_last_chunk_id": int(idx),
                 }
                 by_name[chunk.filename] = item
             item["chunk_count"] += 1
             item["char_count"] += len(chunk.text)
-        return sorted(by_name.values(), key=lambda x: str(x["filename"]).lower())
+            item["_last_chunk_id"] = int(idx)
+
+        docs = list(by_name.values())
+        # 时间倒序：末次分片越靠后越新（导入/重建会追加）；原文件 mtime 作次要键
+        docs.sort(
+            key=lambda x: (
+                int(x.get("_last_chunk_id") or 0),
+                float(x.get("updated_at") or 0.0),
+            ),
+            reverse=True,
+        )
+        for item in docs:
+            item.pop("_last_chunk_id", None)
+        return docs
 
     def stats(self) -> Dict[str, Any]:
         """
@@ -1833,9 +2202,25 @@ class KnowledgeBase:
             "dimension": int(dim or 0),
             "index_total": int(self._index.ntotal) if self._index is not None else 0,
             "embedding_model": self.embedding_model_name,
+            "index_embedding_model": getattr(self, "_index_embedding_model", None),
+            # verified / unverified / empty：unverified 时不为仅 BM25 命中的候选算余弦，换过模型请重建
+            "embedding_consistency": self.embedding_consistency(),
             "reranker_model": self.reranker_model_name,
             "chat_model": self.chat_model_name,
+            # 与 apply_retrieval_backend 的 backend 字段对齐，供模型管理页展示
+            "embedding_backend": (
+                "openai_compat" if self.use_lm_studio_embeddings else "local_hf"
+            ),
+            "reranker_backend": (
+                "openai_compat" if self.use_lm_studio_rerank else "local_hf"
+            ),
+            "chat_backend": (
+                "openai_compat" if self.use_lm_studio_chat else "local_hf"
+            ),
+            "use_lm_studio_embeddings": self.use_lm_studio_embeddings,
+            "use_lm_studio_rerank": self.use_lm_studio_rerank,
             "use_lm_studio_chat": self.use_lm_studio_chat,
+            "device_label": getattr(self, "device_label", "cpu"),
             "loaded_models": loaded_models,
             "models_memory_total": total_memory,
             "process_memory": process_memory,
@@ -1915,7 +2300,7 @@ class KnowledgeBase:
             "name": self.embedding_model_name,
             "backend": embed_backend,
             "loaded": bool(embed_model_obj) if embed_backend == "local" else None,
-            "device": self.device if embed_backend == "local" else None,
+            "device": self.device_label if embed_backend == "local" else None,
             "memory": self._torch_module_memory(embed_model_obj),
             "note": None if embed_backend == "local" else "remote_backend",
         }
@@ -1930,7 +2315,7 @@ class KnowledgeBase:
             "name": self.reranker_model_name,
             "backend": rerank_backend,
             "loaded": bool(rerank_model_obj) if rerank_backend == "local" else None,
-            "device": self.device if rerank_backend == "local" else None,
+            "device": self.device_label if rerank_backend == "local" else None,
             "memory": self._torch_module_memory(rerank_model_obj),
             "note": None if rerank_backend == "local" else "remote_backend",
         }
@@ -1950,7 +2335,7 @@ class KnowledgeBase:
             "name": chat_loaded_name,
             "backend": chat_backend,
             "loaded": bool(chat_model_obj) if chat_backend == "local" else None,
-            "device": self.device if chat_backend == "local" else None,
+            "device": self.device_label if chat_backend == "local" else None,
             "memory": self._torch_module_memory(chat_model_obj),
             "note": None if chat_backend == "local" else "remote_backend",
         }
@@ -2012,6 +2397,258 @@ class KnowledgeBase:
         self._rerank_model = None
         self._rerank_tokenizer = None
         return True
+
+    def apply_retrieval_backend(
+        self,
+        *,
+        kind: str,
+        provider: str,
+        model_name: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        dimension: int | None = None,
+        timeout: float | None = None,
+    ) -> Dict[str, Any]:
+        """
+        按模型管理「设为默认」切换检索侧 Embedding / Rerank 后端。
+        huggingface = 进程内 HF 本地加载；其余视为 OpenAI 兼容 HTTP（走 lm_client）。
+        维度与已有向量库不一致时只告警，不自动改库。
+        """
+        kind_norm = str(kind or "").strip().lower()
+        if kind_norm in {"embed", "embedding"}:
+            kind_norm = "embedding"
+        elif kind_norm in {"rerank", "reranker"}:
+            kind_norm = "rerank"
+        else:
+            return {"ok": False, "error": f"不支持的检索类型: {kind}"}
+
+        provider_norm = str(provider or "").strip().lower()
+        model = str(model_name or "").strip()
+        if not model:
+            return {"ok": False, "error": "model_name 不能为空"}
+
+        is_local_hf = provider_norm in {"huggingface", "hf", "local_hf", "local"}
+        warnings: List[str] = []
+        changed = False
+
+        if kind_norm == "embedding":
+            if (
+                dimension is not None
+                and self.dimension is not None
+                and int(dimension) > 0
+                and int(dimension) != int(self.dimension)
+            ):
+                warnings.append(
+                    f"配置维度 {int(dimension)} 与当前向量库维度 {int(self.dimension)} 不一致；"
+                    "未改写索引，换模型后如维度不同需重建向量库。"
+                )
+            if is_local_hf:
+                if self.use_lm_studio_embeddings or self.embedding_model_name != model:
+                    self._unload_embed_model()
+                    changed = True
+                self.use_lm_studio_embeddings = False
+                self.embedding_model_name = model
+            else:
+                url = str(base_url or "").strip() or self.lm_studio_base_url
+                if not url or url.startswith("local://"):
+                    return {"ok": False, "error": "OpenAI 兼容 Embedding 需要有效的 base_url"}
+                if (
+                    not self.use_lm_studio_embeddings
+                    or self.embedding_model_name != model
+                    or str(self.lm_studio_base_url or "") != url
+                ):
+                    self._unload_embed_model()
+                    changed = True
+                self.use_lm_studio_embeddings = True
+                self.embedding_model_name = model
+                self.lm_studio_base_url = url
+                if api_key is not None:
+                    self.lm_studio_api_key = api_key or None
+                if timeout is not None:
+                    self.lm_studio_timeout = float(timeout)
+                self._lm_client = LmStudioClient(
+                    self.lm_studio_base_url,
+                    api_key=self.lm_studio_api_key,
+                    timeout=self.lm_studio_timeout,
+                )
+            backend = "local_hf" if is_local_hf else "openai_compat"
+            logger.info(
+                "Applied embedding backend: provider=%s model=%s backend=%s changed=%s",
+                provider_norm,
+                model,
+                backend,
+                changed,
+            )
+            return {
+                "ok": True,
+                "kind": "embedding",
+                "provider": provider_norm,
+                "model": model,
+                "backend": backend,
+                "changed": changed,
+                "warnings": warnings,
+                "dimension": self.dimension,
+            }
+
+        # rerank
+        if is_local_hf:
+            if self.use_lm_studio_rerank or self.reranker_model_name != model:
+                self._unload_rerank_model()
+                changed = True
+            self.use_lm_studio_rerank = False
+            self.reranker_model_name = self._normalize_reranker_model_name(model)
+        else:
+            url = str(base_url or "").strip() or self.lm_studio_base_url
+            if not url or url.startswith("local://"):
+                return {"ok": False, "error": "OpenAI 兼容 Rerank 需要有效的 base_url"}
+            if (
+                not self.use_lm_studio_rerank
+                or self.reranker_model_name != model
+                or str(self.lm_studio_base_url or "") != url
+            ):
+                self._unload_rerank_model()
+                changed = True
+            self.use_lm_studio_rerank = True
+            self.reranker_model_name = self._normalize_reranker_model_name(model)
+            self.lm_studio_base_url = url
+            if api_key is not None:
+                self.lm_studio_api_key = api_key or None
+            if timeout is not None:
+                self.lm_studio_timeout = float(timeout)
+            self._lm_client = LmStudioClient(
+                self.lm_studio_base_url,
+                api_key=self.lm_studio_api_key,
+                timeout=self.lm_studio_timeout,
+            )
+        backend = "local_hf" if is_local_hf else "openai_compat"
+        logger.info(
+            "Applied rerank backend: provider=%s model=%s backend=%s changed=%s",
+            provider_norm,
+            model,
+            backend,
+            changed,
+        )
+        return {
+            "ok": True,
+            "kind": "rerank",
+            "provider": provider_norm,
+            "model": self.reranker_model_name,
+            "backend": backend,
+            "changed": changed,
+            "warnings": warnings,
+        }
+
+    def apply_chat_backend(
+        self,
+        *,
+        provider: str,
+        model_name: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout: float | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Dict[str, Any]:
+        """
+        按模型管理「设为默认 / 保存默认」热切换知识库分析（chat）后端。
+        绝大多数服务商走 OpenAI 兼容 HTTP；huggingface 别名则切本地 ChatModel。
+        Chat 客户端挂在 _chat_backend 上，不覆盖 embedding/rerank 共用的 _lm_client。
+        """
+        provider_norm = str(provider or "").strip().lower()
+        model = str(model_name or "").strip()
+        if not model:
+            return {"ok": False, "error": "model_name 不能为空"}
+
+        is_local_hf = provider_norm in {"huggingface", "hf", "local_hf", "local"}
+        changed = False
+        warnings: List[str] = []
+
+        if temperature is not None:
+            try:
+                self.chat_temperature = float(temperature)
+                changed = True
+            except Exception:
+                warnings.append("temperature 无效，已忽略")
+        if max_tokens is not None:
+            try:
+                mt = int(max_tokens)
+                if mt > 0:
+                    self.chat_max_tokens = mt
+                    changed = True
+            except Exception:
+                warnings.append("max_tokens 无效，已忽略")
+
+        if is_local_hf:
+            if self.use_lm_studio_chat or self.chat_model_name != model:
+                self._unload_chat_model()
+                changed = True
+            self.use_lm_studio_chat = False
+            self.chat_model_name = model
+            if self._chat_backend is not None:
+                self._chat_backend.use_lm_studio = False
+                self._chat_backend._lm_client = None
+                self._chat_backend.default_temperature = float(self.chat_temperature)
+                self._chat_backend.default_max_tokens = int(self.chat_max_tokens)
+            backend = "local_hf"
+        else:
+            url = str(base_url or "").strip()
+            if not url or url.startswith("local://"):
+                return {"ok": False, "error": "OpenAI 兼容 Chat 需要有效的 base_url"}
+            prev_url = ""
+            if self._chat_backend is not None and getattr(self._chat_backend, "_lm_client", None) is not None:
+                prev_url = str(getattr(self._chat_backend._lm_client, "base_url", "") or "")
+            if (
+                not self.use_lm_studio_chat
+                or self.chat_model_name != model
+                or prev_url.rstrip("/") != url.rstrip("/")
+            ):
+                changed = True
+            self.use_lm_studio_chat = True
+            self.chat_model_name = model
+            chat_timeout = float(timeout) if timeout is not None else float(self.lm_studio_timeout or 30.0)
+            chat_key = self.lm_studio_api_key if api_key is None else (api_key or None)
+            chat_client = UniversalLLMClient(
+                url,
+                api_key=chat_key,
+                timeout=chat_timeout,
+                provider=provider_norm or None,
+            )
+            if self._chat_backend is None:
+                self._chat_backend = ChatModel(
+                    device=self.device,
+                    model_cache_dir=self.model_cache_dir,
+                    use_lm_studio=True,
+                    lm_client=chat_client,
+                    lm_base_url=url,
+                    lm_api_key=chat_key,
+                    lm_timeout=chat_timeout,
+                    local_files_only=self.chat_local_files_only,
+                    default_temperature=self.chat_temperature,
+                    default_max_tokens=self.chat_max_tokens,
+                )
+            else:
+                self._chat_backend.use_lm_studio = True
+                self._chat_backend._lm_client = chat_client
+                self._chat_backend.default_temperature = float(self.chat_temperature)
+                self._chat_backend.default_max_tokens = int(self.chat_max_tokens)
+            backend = "openai_compat"
+
+        logger.info(
+            "Applied chat backend: provider=%s model=%s backend=%s changed=%s",
+            provider_norm,
+            model,
+            backend,
+            changed,
+        )
+        return {
+            "ok": True,
+            "kind": "chat",
+            "provider": provider_norm,
+            "model": model,
+            "backend": backend,
+            "changed": changed,
+            "warnings": warnings,
+        }
 
     def _unload_chat_model(self) -> bool:
         if self._chat_backend is None:
@@ -2769,6 +3406,13 @@ class KnowledgeBase:
             logger.debug("文本为空，跳过添加")
             return 0
 
+        # 文本导入落原文件；若上传已写过二进制原件则不覆盖
+        try:
+            if self.get_original_path(filename_norm) is None:
+                self.save_original_text(filename_norm, text)
+        except Exception:
+            logger.warning("保存文本原文件失败: %s", filename_norm, exc_info=True)
+
         target_key = self._filename_key(filename_norm)
         keep_idx = [i for i, c in enumerate(self._chunks) if self._filename_key(c.filename) != target_key]
         removed_count = len(self._chunks) - len(keep_idx)
@@ -2794,6 +3438,7 @@ class KnowledgeBase:
         logger.debug("向量生成完成，shape=%s", vecs.shape)
 
         new_chunks = [_Chunk(filename=filename_norm, text=part) for part in parts]
+        self._note_vectors_written(int(self._embeddings.shape[0]) if self._embeddings.size else 0)
         if self._embeddings.size == 0:
             logger.debug("这是第一个文档，初始化嵌入矩阵")
             self._embeddings = vecs
@@ -2847,6 +3492,10 @@ class KnowledgeBase:
             - .py / .yaml: 代码和配置文件
         """
         path = Path(file_path)
+        try:
+            self.save_original_bytes(path.name, path.read_bytes())
+        except Exception:
+            logger.warning("复制本地原文件失败: %s", path, exc_info=True)
         text = self._extract_text(path)
         return self.add_document(self._normalize_filename(path.name), text)
 
@@ -2906,6 +3555,11 @@ class KnowledgeBase:
         data = bytes(content or b"")
         if not data:
             return 0
+
+        try:
+            self.save_original_bytes(filename_clean, data)
+        except Exception:
+            logger.warning("保存上传原文件失败: %s", filename_clean, exc_info=True)
 
         upload_tmp_dir = self.persist_dir / ".upload_tmp"
         upload_tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -3001,24 +3655,37 @@ class KnowledgeBase:
         query_norm = (query or "").strip().lower()
 
         items: List[Dict[str, Any]] = []
+        local_index_by_file: Dict[str, int] = {}
         for idx, chunk in enumerate(self._chunks):
             if filename_key and self._filename_key(chunk.filename) != filename_key:
                 continue
             if query_norm and query_norm not in (chunk.text or "").lower():
                 continue
+            fname = chunk.filename
+            local_idx = local_index_by_file.get(fname, 0)
+            local_index_by_file[fname] = local_idx + 1
+            text = chunk.text or ""
             items.append(
                 {
                     "id": int(idx),
-                    "filename": chunk.filename,
-                    "text": chunk.text,
-                    "char_count": len(chunk.text or ""),
+                    "chunk_index": int(local_idx),
+                    "filename": fname,
+                    "text": text,
+                    "char_count": len(text),
+                    "preview": text[:240],
                 }
             )
 
         total = len(items)
         start = (page_index - 1) * page_size
         end = start + page_size
-        return {"total": total, "items": items[start:end]}
+        return {
+            "total": total,
+            "count": total,
+            "page_index": page_index,
+            "page_size": page_size,
+            "items": items[start:end],
+        }
 
     def update_chunk(self, chunk_id: int, text: str) -> None:
         """
@@ -3060,6 +3727,7 @@ class KnowledgeBase:
         if vecs.shape[0] != 1:
             raise RuntimeError("Embedding count mismatch while updating chunk")
         self._chunks[idx].text = new_text
+        self._note_vectors_written(int(self._embeddings.shape[0]) if self._embeddings.size else 0)
         if self._embeddings.size == 0:
             self._embeddings = vecs
         else:
@@ -3195,6 +3863,7 @@ class KnowledgeBase:
             raise RuntimeError("Embedding count mismatch while rebuilding chunks")
 
         new_chunks = [_Chunk(filename=filename_norm, text=part) for part in parts]
+        self._note_vectors_written(int(self._embeddings.shape[0]) if self._embeddings.size else 0)
         if self._embeddings.size == 0:
             self._embeddings = vecs
         else:
@@ -3382,6 +4051,158 @@ class KnowledgeBase:
             out.append((int(idx), float(score)))
         return out
 
+    def _bm25_search(self, query: str, top_n: int) -> List[Tuple[int, float]]:
+        """稀疏召回；索引未就绪或异常时返回空列表，供混合检索降级。"""
+        if self._bm25 is None or top_n <= 0:
+            return []
+        policy = getattr(self, "evidence_policy", None)
+        extra_generic = getattr(policy, "extra_generic_terms", None) or None
+        try:
+            return self._bm25.search(query, top_n=top_n, extra_generic=extra_generic)
+        except Exception:
+            logger.exception("BM25 search failed; degrading to vector-only if available")
+            return []
+
+    def _fuse_hybrid_candidates(
+        self,
+        vector_hits: List[Tuple[int, float]],
+        bm25_hits: List[Tuple[int, float]],
+        *,
+        top_n: int,
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        双通道融合：两路都有 → RRF；仅一路 → 直接用该路（降级）。
+
+        融合只决定「捞哪些、按什么顺序」。各通道分数分开存：
+        vector_similarity 只来自向量通道（余弦），bm25_score 保留原始词法分，
+        不再把「BM25/本批最高BM25」冒充向量相似度——那样本批第一名永远是 1.0。
+        返回 (candidates, channel_label)。
+        """
+        vec_map = {int(idx): float(score) for idx, score in vector_hits}
+        vec_rank = {int(idx): rank for rank, (idx, _s) in enumerate(vector_hits, start=1)}
+        bm_map = {int(idx): float(score) for idx, score in bm25_hits}
+        bm_rank = {int(idx): rank for rank, (idx, _s) in enumerate(bm25_hits, start=1)}
+
+        if vector_hits and bm25_hits:
+            ordered = rrf_fuse(vector_hits, bm25_hits, top_n=top_n, rrf_k=self.rrf_k)
+            channel = "hybrid_rrf"
+        elif vector_hits:
+            ordered = [(int(i), None) for i, _s in vector_hits[:top_n]]
+            channel = "vector_only"
+        elif bm25_hits:
+            ordered = [(int(i), None) for i, _s in bm25_hits[:top_n]]
+            channel = "bm25_only"
+        else:
+            return [], "empty"
+
+        out: List[Dict[str, Any]] = []
+        for idx, rrf_score in ordered:
+            idx = int(idx)
+            channels = []
+            if idx in vec_map:
+                channels.append("vector")
+            if idx in bm_map:
+                channels.append("bm25")
+            out.append(
+                {
+                    "idx": idx,
+                    "vector_similarity": vec_map.get(idx),
+                    "vector_rank": vec_rank.get(idx),
+                    "bm25_score": bm_map.get(idx),
+                    "bm25_rank": bm_rank.get(idx),
+                    "rrf_score": None if rrf_score is None else float(rrf_score),
+                    "channels": channels,
+                }
+            )
+        return out, channel
+
+    def _fill_missing_vector_scores(
+        self, candidates: List[Dict[str, Any]], query_vec: np.ndarray | None
+    ) -> None:
+        """
+        给只被 BM25 捞到的候选补算余弦。
+
+        前提是持久化向量和查询向量确认出自同一模型；只凭维度相同就比，得到的是伪余弦，
+        所以无法确认时宁可留 None，交给重排和证据门槛去判。
+        """
+        if query_vec is None or getattr(query_vec, "size", 0) == 0:
+            return
+        missing = [c for c in candidates if c.get("vector_similarity") is None]
+        if not missing:
+            return
+        embeddings = getattr(self, "_embeddings", None)
+        chunks = getattr(self, "_chunks", None) or []
+        if (
+            embeddings is None
+            or getattr(embeddings, "ndim", 0) != 2
+            or embeddings.shape[0] != len(chunks)
+            or embeddings.shape[1] != query_vec.shape[-1]
+        ):
+            return
+        consistency = self.embedding_consistency()
+        if consistency != "verified":
+            if not getattr(self, "_warned_embedding_consistency", False):
+                logger.warning(
+                    "持久化向量与当前 embedding 模型无法确认一致（stored=%s current=%s）；"
+                    "不为仅 BM25 命中的候选计算余弦。如确实换过模型，请重建向量索引。",
+                    getattr(self, "_index_embedding_model", None),
+                    getattr(self, "embedding_model_name", None),
+                )
+                self._warned_embedding_consistency = True
+            return
+        q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
+        for cand in missing:
+            idx = int(cand["idx"])
+            if 0 <= idx < embeddings.shape[0]:
+                cand["vector_similarity"] = float(np.dot(embeddings[idx], q))
+                cand["vector_score_source"] = "computed"
+
+    def _diversify_for_rerank(
+        self, candidates: List[Dict[str, Any]], cap: int
+    ) -> List[Dict[str, Any]]:
+        """
+        截到重排名额前做文件级多样化：每个文件先最多占 max_rerank_chunks_per_file 个名额，
+        名额没用完再按融合顺序补回同文件的其余分片。长文件不会把别的文件挤出重排，
+        真正相关的同文件多段落也还有机会进来。
+        """
+        if len(candidates) <= cap:
+            return list(candidates)
+        per_file = max(1, int(getattr(self, "max_rerank_chunks_per_file", 3) or 3))
+        chunks = self._chunks
+        counts: Dict[str, int] = {}
+        chosen: set[int] = set()
+        for pos, cand in enumerate(candidates):
+            if len(chosen) >= cap:
+                break
+            key = self._filename_key(chunks[int(cand["idx"])].filename)
+            if counts.get(key, 0) < per_file:
+                counts[key] = counts.get(key, 0) + 1
+                chosen.add(pos)
+        for pos in range(len(candidates)):
+            if len(chosen) >= cap:
+                break
+            chosen.add(pos)
+        return [cand for pos, cand in enumerate(candidates) if pos in chosen]
+
+    def _combine_scores(
+        self, vector_sim: float | None, rerank_prob: float | None
+    ) -> float:
+        """
+        合成排序分：向量余弦与重排概率按权重加权，缺哪项就在剩下的项里重新归一。
+        缺项不再拿 BM25 相对分顶替；两项都缺时给 0，这类候选没有任何语义证据。
+        """
+        parts: List[Tuple[float, float]] = []
+        if vector_sim is not None:
+            parts.append((float(self.embed_weight), self._score_to_similarity(vector_sim)))
+        if rerank_prob is not None and float(self.rerank_weight) > 0:
+            parts.append((float(self.rerank_weight), self._score_to_similarity(rerank_prob)))
+        if not parts:
+            return 0.0
+        total_w = sum(w for w, _ in parts)
+        if total_w <= 0:
+            return self._score_to_similarity(sum(s for _, s in parts) / len(parts))
+        return self._score_to_similarity(sum(w * s for w, s in parts) / total_w)
+
     @staticmethod
     def _score_to_similarity(score: float) -> float:
         sim = float(score)
@@ -3403,75 +4224,33 @@ class KnowledgeBase:
     ) -> List[Tuple[str, str, float]]:
         """
         搜索知识库，返回最相关的文本分片。
-        
-        使用多阶段检索和重排序策略：
-        1. 第一阶段：使用嵌入模型编码查询，在 FAISS 索引中召回前 top_n 候选
-        2. 第二阶段：使用重排序模型对候选重排，计算混合相似度分数
-        3. 第三阶段：按相似度排序，过滤相关性阈值，去重，返回前 k 个结果
-        
-        参数说明：
-            query (str)
-                搜索查询文本。会被向量化进行语义相似性搜索。
-                示例："如何学习 Python"、"knowledge base API"
-                
-            k (int, 可选)
-                返回结果数量。默认值为 None（使用 self.default_k）。
-                实际返回数可能少于 k，取决于：
-                - 知识库中的总分片数
-                - 相关性阈值过滤结果
-                - 去重（同一文档只返回一个最相关分片）
-                范围：[1, self.max_search_results]
-                
-            relevance_threshold (float, 可选)
-                相关性阈值。值越小越严格。默认值：None（无阈值）。
-                基于距离度量。范围：[0, ∞)，建议 [0.5, 2.0] 范围内。
-                示例：threshold=1.0 只返回距离 ≤ 1.0 的结果
-                
-        返回值：
-            List[Tuple[str, str, float]]
-            返回列表，每个元素是 (filename, chunk_text, distance)：
-            [
-                ("document.pdf", "示例文本分片 1...", 0.523),
-                ("guide.md", "示例文本分片 2...", 0.687),
-                ...
-            ]
-            distance 为相关性距离，值越小表示越相关。
-            
-        异常处理：
-            无异常抛出。当知识库为空时返回空列表。
-        
-        示例用法：
-            >>> kb = KnowledgeBase()
-            >>> kb.add_document("tutorial.md", "Python 是一门强大的编程语言...")
-            >>> results = kb.search("Python 编程", k=3)
-            >>> for filename, text, distance in results:
-            ...     print(f"{filename}: {distance:.3f}")
-            ...     print(f"  {text[:50]}...")
-            
-        高级示例：
-            >>> # 严格相关性过滤
-            >>> results = kb.search("机器学习", k=5, relevance_threshold=0.8)
-            >>> # 查看搜索细节
-            >>> logger.setLevel(logging.DEBUG)  # 查看日志信息
-        
-        搜索流程详解：
-            1. 查询编码：text -> embedding vector
-            2. 候选召回：用 FAISS 找前 (k * candidate_multiplier) 个候选
-            3. 重排序：使用 Reranker 模型重新评分
-            4. 混合评分：embed_weight * embed_score + rerank_weight * rerank_score
-            5. 排序去重：按分数排序，去重取前 k 个
-            6. 阈值过滤：如果 distance > threshold 则过滤
-            7. 结果日志：打印搜索统计信息
+
+        KB-01 混合检索流程：
+        1. 向量 ANN 召回 +（可选）BM25 字面召回
+        2. 双通道 RRF 融合；任一通道失败/关闭则自动降级；各通道分数分开记录
+        3. 仅 BM25 命中的候选在向量模型确认一致时补算余弦；重排前做文件级多样化
+        4. Reranker 打分并换算成概率：embed_weight * 向量余弦 + rerank_weight * 重排概率，缺项按剩余权重归一
+        5. 按合成分排序，阈值过滤、按文件名去重，返回前 k
+
+        返回三元组格式不变；分项分数放在 _last_search_details，证据门槛由调用方（API / 评测）执行。
         """
-        logger.debug("开始搜索: query='%s', k=%s, relevance_threshold=%s", query[:50] if query and len(query) > 50 else query, k, relevance_threshold)
-        
+        logger.debug(
+            "开始搜索: query='%s', k=%s, relevance_threshold=%s, hybrid=%s",
+            query[:50] if query and len(query) > 50 else query,
+            k,
+            relevance_threshold,
+            getattr(self, "hybrid_enabled", True),
+        )
+
         if not self._chunks:
             logger.debug("知识库为空，返回空结果")
+            self._last_search_details = []
             return []
 
         query = (query or "").strip()
         if not query:
             logger.debug("查询文本为空，返回空结果")
+            self._last_search_details = []
             return []
 
         if k is None:
@@ -3481,48 +4260,108 @@ class KnowledgeBase:
         if k <= 0:
             return []
 
-        logger.debug("编码查询文本...")
-        q_vec = self._embed_texts([query])
-        if q_vec.shape[0] == 0:
-            logger.debug("查询编码失败，返回空结果")
-            return []
-        logger.debug("查询编码完成，向量维度: %s", q_vec.shape)
-
         top_n = min(
             max(int(k) * self.candidate_multiplier, self.min_candidates, int(k)),
             len(self._chunks),
         )
-        logger.debug("开始候选召回，召回数量: %d (k=%d, multiplier=%d)", top_n, k, self.candidate_multiplier)
-        candidates = self._candidate_search(q_vec, top_n=top_n)
-        if not candidates:
-            logger.debug("未找到候选结果")
-            return []
-        logger.debug("召回 %d 个候选结果", len(candidates))
 
+        vector_hits: List[Tuple[int, float]] = []
+        bm25_hits: List[Tuple[int, float]] = []
+        q_vec: np.ndarray | None = None
+
+        # 向量通道：编码失败则降级到纯 BM25（若开了混合）
+        try:
+            logger.debug("编码查询文本...")
+            q_vec = self._embed_texts([query])
+            if q_vec.shape[0] == 0:
+                logger.warning("查询编码失败，向量通道降级")
+                q_vec = None
+            else:
+                logger.debug("开始向量候选召回，召回数量: %d", top_n)
+                vector_hits = self._candidate_search(q_vec, top_n=top_n)
+                logger.debug("向量召回 %d 个候选", len(vector_hits))
+        except Exception:
+            logger.exception("向量召回异常，将尝试 BM25 降级")
+            vector_hits = []
+
+        if self.hybrid_enabled:
+            bm25_hits = self._bm25_search(query, top_n=top_n)
+            logger.debug("BM25 召回 %d 个候选", len(bm25_hits))
+        candidates, channel = self._fuse_hybrid_candidates(
+            vector_hits, bm25_hits, top_n=top_n
+        )
+
+        if not candidates:
+            logger.debug("未找到候选结果（channel=%s）", channel)
+            self._last_search_details = []
+            return []
+        logger.debug(
+            "Hybrid recall: channel=%s vector=%s bm25=%s fused=%s rrf_k=%s",
+            channel,
+            len(vector_hits),
+            len(bm25_hits),
+            len(candidates),
+            self.rrf_k if self.hybrid_enabled else None,
+        )
+
+        self._fill_missing_vector_scores(candidates, q_vec)
+
+        rerank_status = "disabled"
         if self.rerank_weight > 0:
-            logger.debug("开始重排序，rerank_weight=%.2f", self.rerank_weight)
-            cand_texts = [self._chunks[idx].text for idx, _ in candidates]
-            rerank_raw = self._rerank_scores(query, cand_texts)
-            ranked: List[Tuple[int, float]] = []
-            for (idx, base_score), rr in zip(candidates, rerank_raw):
-                base_sim = self._score_to_similarity(base_score)
-                rr_sim = self._score_to_similarity(self._sigmoid(float(rr)))
-                final_sim = self.embed_weight * base_sim + self.rerank_weight * rr_sim
-                ranked.append((idx, self._score_to_similarity(final_sim)))
-            logger.debug("重排序完成，得到 %d 个结果", len(ranked))
+            # 只把融合后的前 N 送交叉编码器，避免 CPU 上对几十条候选逐条打分
+            rerank_cap = max(int(k), int(getattr(self, "max_rerank_candidates", 8) or 8))
+            if len(candidates) > rerank_cap:
+                logger.debug(
+                    "截断重排候选 %d -> %d (max_rerank_candidates, 每文件≤%s)",
+                    len(candidates),
+                    rerank_cap,
+                    getattr(self, "max_rerank_chunks_per_file", 3),
+                )
+                candidates = self._diversify_for_rerank(candidates, rerank_cap)
+            logger.debug("开始重排序，rerank_weight=%.2f candidates=%d", self.rerank_weight, len(candidates))
+            try:
+                cand_texts = [self._chunks[c["idx"]].text for c in candidates]
+                rerank_raw = list(self._rerank_scores(query, cand_texts))
+                if len(rerank_raw) != len(candidates):
+                    raise RuntimeError(
+                        f"rerank 返回 {len(rerank_raw)} 个分数，候选 {len(candidates)} 个"
+                    )
+                probs = self._rerank_probabilities(rerank_raw)
+                for cand, raw_score, prob in zip(candidates, rerank_raw, probs):
+                    cand["rerank_raw"] = float(raw_score)
+                    cand["rerank_similarity"] = self._score_to_similarity(prob)
+                rerank_status = "ok"
+                logger.debug("重排序完成，得到 %d 个结果", len(candidates))
+            except Exception:
+                # 不再退回「伪向量分」照常过阈值：标记失败，交给证据门槛按「无重排证据」处理
+                logger.exception("重排序失败，本次仅保留向量证据")
+                rerank_status = "failed"
+                for cand in candidates:
+                    cand.pop("rerank_raw", None)
+                    cand.pop("rerank_similarity", None)
         else:
             logger.debug("跳过重排序（rerank_weight=0）")
-            ranked = [(idx, self._score_to_similarity(score)) for idx, score in candidates]
 
-        ranked.sort(key=lambda x: x[1], reverse=True)
+        for cand in candidates:
+            cand["final_similarity"] = self._combine_scores(
+                cand.get("vector_similarity"), cand.get("rerank_similarity")
+            )
+        # 稳定排序：分数相同（比如都没有语义证据）时保留融合顺序
+        ranked = sorted(candidates, key=lambda c: c["final_similarity"], reverse=True)
         logger.debug("结果排序完成")
 
         threshold = None if relevance_threshold is None else float(relevance_threshold)
         results: List[Tuple[str, str, float]] = []
+        details: List[Dict[str, Any]] = []
         seen_filenames: set[str] = set()
-        
+
+        def _r(value: Any) -> float | None:
+            return None if value is None else round(float(value), 4)
+
         logger.debug("开始过滤和去重，阈值=%s", threshold)
-        for idx, sim in ranked:
+        for cand in ranked:
+            idx = int(cand["idx"])
+            sim = float(cand["final_similarity"])
             distance = self._similarity_to_distance(sim)
             if threshold is not None and distance > threshold:
                 logger.debug("过滤结果 idx=%d (distance=%.4f > threshold=%.4f)", idx, distance, threshold)
@@ -3534,16 +4373,50 @@ class KnowledgeBase:
                 continue
             seen_filenames.add(filename_key)
             results.append((chunk.filename, chunk.text, float(distance)))
+            vector_sim = cand.get("vector_similarity")
+            # 各通道分数分开给：向量余弦、BM25 原始分、重排概率各是各的含义，互不冒充
+            details.append(
+                {
+                    "filename": str(chunk.filename),
+                    "chunk_index": idx,
+                    "channel": channel,
+                    "channels": list(cand.get("channels") or []),
+                    "final_similarity": round(sim, 4),
+                    "vector_similarity": _r(vector_sim),
+                    "vector_score_source": (
+                        None
+                        if vector_sim is None
+                        else cand.get("vector_score_source") or "ann"
+                    ),
+                    # 旧字段保留给老调用方；现在它只在确有向量余弦时才有值
+                    "embed_similarity": _r(vector_sim),
+                    "vector_rank": cand.get("vector_rank"),
+                    "bm25_score": _r(cand.get("bm25_score")),
+                    "bm25_rank": cand.get("bm25_rank"),
+                    "rrf_score": (
+                        None
+                        if cand.get("rrf_score") is None
+                        else round(float(cand["rrf_score"]), 6)
+                    ),
+                    "rerank_raw": _r(cand.get("rerank_raw")),
+                    "rerank_similarity": _r(cand.get("rerank_similarity")),
+                    "rerank_status": rerank_status,
+                }
+            )
             logger.debug("添加结果 #%d: filename=%s, distance=%.4f", len(results), chunk.filename, distance)
             if len(results) >= int(k):
                 break
-        
+
+        # API 层按文件名回填明细；兼容旧调用方仍只看三元组
+        self._last_search_details = details
+
         logger.info(
-            "Search completed: query_len=%s requested_k=%s returned=%s threshold=%s",
+            "Search completed: query_len=%s requested_k=%s returned=%s threshold=%s channel=%s",
             len(query),
             k,
             len(results),
             relevance_threshold,
+            channel,
         )
         logger.debug("搜索完成，返回 %d 个结果", len(results))
         return results

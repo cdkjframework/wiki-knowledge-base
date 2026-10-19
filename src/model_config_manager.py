@@ -17,6 +17,39 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+_VALID_MODEL_TYPES = frozenset({"chat", "embedding", "rerank"})
+
+# 进程内 HF 本地加载（不走 OpenAI SDK）
+LOCAL_HF_PROVIDER = "huggingface"
+LOCAL_HF_BASE_URL = "local://huggingface"
+LOCAL_HF_ALIASES = frozenset({"huggingface", "hf", "local_hf", "local"})
+
+
+def normalize_model_type(raw: Any, *, default: str = "chat") -> str:
+    """统一 model_type：embedding / rerank / chat（知识库分析）。"""
+    text = str(raw or default).strip().lower()
+    if text in {"embed", "embedding"}:
+        return "embedding"
+    if text in {"rerank", "reranker"}:
+        return "rerank"
+    if text in {"chat", "analysis", "llm", "completion"}:
+        return "chat"
+    if text in _VALID_MODEL_TYPES:
+        return text
+    return default
+
+
+def is_local_hf_provider(provider: Any) -> bool:
+    return str(provider or "").strip().lower() in LOCAL_HF_ALIASES
+
+
+def normalize_base_url_for_provider(provider: str, base_url: str | None) -> str:
+    """huggingface 允许空 base_url，落库为 local://huggingface。"""
+    if is_local_hf_provider(provider):
+        text = str(base_url or "").strip()
+        return text or LOCAL_HF_BASE_URL
+    return str(base_url or "").strip()
+
 
 class ModelConfigManager:
     """Manager for AI model configurations with database storage"""
@@ -41,6 +74,8 @@ class ModelConfigManager:
         is_active: bool = True,
         is_default: bool = False,
         description: Optional[str] = None,
+        dimension: Optional[int] = None,
+        max_input_length: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Add a new model configuration
@@ -52,10 +87,10 @@ class ModelConfigManager:
             config_id = self.store.add_config(
                 name=name,
                 provider=provider,
-                base_url=base_url,
+                base_url=normalize_base_url_for_provider(provider, base_url),
                 model_name=model_name,
                 api_key=api_key,
-                model_type=model_type,
+                model_type=normalize_model_type(model_type),
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
@@ -64,6 +99,8 @@ class ModelConfigManager:
                 is_active=is_active,
                 is_default=is_default,
                 description=description,
+                dimension=dimension,
+                max_input_length=max_input_length,
             )
             config = self.store.get_config(config_id)
             return {"ok": True, "config": self._sanitize_config(config)}
@@ -82,7 +119,19 @@ class ModelConfigManager:
             # Clear cache for this config
             if config_id in self._client_cache:
                 del self._client_cache[config_id]
-            
+
+            if "model_type" in kwargs and kwargs["model_type"] is not None:
+                kwargs["model_type"] = normalize_model_type(kwargs["model_type"])
+            if "provider" in kwargs or "base_url" in kwargs:
+                provider = kwargs.get("provider")
+                if provider is None:
+                    existing = self.store.get_config(config_id) or {}
+                    provider = existing.get("provider")
+                if "base_url" in kwargs or is_local_hf_provider(provider):
+                    kwargs["base_url"] = normalize_base_url_for_provider(
+                        str(provider or ""),
+                        kwargs.get("base_url"),
+                    )
             success = self.store.update_config(config_id, **kwargs)
             if not success:
                 return {"ok": False, "error": "Config not found or no changes made"}
@@ -154,18 +203,18 @@ class ModelConfigManager:
             Dict with list of configs
         """
         try:
+            mt = normalize_model_type(model_type) if model_type else None
             configs = self.store.list_configs(
                 provider=provider,
                 is_active=is_active,
-                model_type=model_type,
+                model_type=mt,
             )
             sanitized = [self._sanitize_config(cfg) for cfg in configs]
             return {"ok": True, "configs": sanitized, "count": len(sanitized)}
         except Exception as exc:
             logger.error(f"Failed to list model configs: {exc}")
-            return {"ok": False, "error": str(exc)}
-    
-    def get_default_config(self) -> Dict[str, Any]:
+            return {"ok": False, "error": str(exc), "configs": [], "count": 0}    
+    def get_default_config(self, model_type: Optional[str] = None) -> Dict[str, Any]:
         """
         Get the default model configuration
         
@@ -173,7 +222,8 @@ class ModelConfigManager:
             Dict with default config or error
         """
         try:
-            config = self.store.get_default_config()
+            mt = normalize_model_type(model_type) if model_type else None
+            config = self.store.get_default_config(model_type=mt)
             if not config:
                 return {"ok": False, "error": "No default config set"}
             
@@ -193,8 +243,12 @@ class ModelConfigManager:
             success = self.store.set_default(config_id)
             if not success:
                 return {"ok": False, "error": "Config not found"}
-            
-            return {"ok": True, "default_config_id": config_id}
+            config = self.store.get_config(config_id)
+            return {
+                "ok": True,
+                "default_config_id": config_id,
+                "config": self._sanitize_config(config),
+            }
         except Exception as exc:
             logger.error(f"Failed to set default config: {exc}")
             return {"ok": False, "error": str(exc)}
@@ -221,7 +275,7 @@ class ModelConfigManager:
         """
         # Get config
         if use_default:
-            config = self.store.get_default_config()
+            config = self.store.get_default_config(model_type="chat")
             if not config:
                 raise ValueError("No default model config set")
         elif config_id is not None:
@@ -276,25 +330,67 @@ class ModelConfigManager:
         """
         try:
             if config_data:
-                # Test temporary config
+                provider = str(config_data.get("provider") or "unknown")
+                model_name = config_data["model_name"]
+                model_type = normalize_model_type(config_data.get("model_type"), default="chat")
+                if is_local_hf_provider(provider):
+                    return {
+                        "ok": True,
+                        "status": "success",
+                        "message": f"本地 HF 配置有效：{model_name}（设为默认后由进程加载）",
+                        "provider": LOCAL_HF_PROVIDER,
+                        "model_type": model_type,
+                    }
                 client = UniversalLLMClient(
                     base_url=config_data["base_url"],
                     api_key=config_data.get("api_key"),
                     timeout=config_data.get("timeout", 30.0),
-                    provider=config_data.get("provider", "unknown"),
+                    provider=provider,
                     extra_headers=config_data.get("extra_headers") or {},
                 )
-                model_name = config_data["model_name"]
             else:
-                # Test existing config
-                client = self.get_client(config_id=config_id, name=name)
                 if config_id is not None:
                     config = self.store.get_config(config_id)
                 else:
                     config = self.store.get_config_by_name(name)
+                if not config:
+                    return {"ok": False, "status": "error", "error": "Config not found"}
+                provider = str(config.get("provider") or "unknown")
                 model_name = config["model_name"]
-            
-            # Send test message
+                model_type = normalize_model_type(config.get("model_type"), default="chat")
+                if is_local_hf_provider(provider):
+                    return {
+                        "ok": True,
+                        "status": "success",
+                        "message": f"本地 HF 配置有效：{model_name}（设为默认后由进程加载）",
+                        "provider": LOCAL_HF_PROVIDER,
+                        "model_type": model_type,
+                    }
+                client = self.get_client(config_id=config_id, name=name)
+
+            if model_type == "embedding":
+                vectors = client.embed_texts(["ping"], model=model_name)
+                dim = int(getattr(vectors, "shape", [0, 0])[1]) if vectors is not None else 0
+                return {
+                    "ok": True,
+                    "status": "success",
+                    "message": f"Embedding 连通正常，维度={dim or '—'}",
+                    "provider": client.provider,
+                    "dimension": dim or None,
+                }
+            if model_type == "rerank":
+                scores = client.rerank_scores(
+                    query="ping",
+                    docs=["pong"],
+                    model=model_name,
+                )
+                return {
+                    "ok": True,
+                    "status": "success",
+                    "message": f"Rerank 连通正常（scores={len(scores) if scores is not None else 0}）",
+                    "provider": client.provider,
+                }
+
             response = client.chat_once(
                 messages=[{"role": "user", "content": "Hello"}],
                 model=model_name,
@@ -318,7 +414,57 @@ class ModelConfigManager:
         except Exception as exc:
             logger.error(f"Model config test failed: {exc}")
             return {"ok": False, "status": "error", "error": str(exc)}
-    
+
+    def list_remote_models(
+        self,
+        *,
+        provider: str,
+        base_url: str,
+        api_key: Optional[str] = None,
+        timeout: float = 30.0,
+        config_id: Optional[int] = None,
+        extra_headers: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """按当前表单（或已存配置的密钥）去上游拉模型列表。"""
+        try:
+            provider_name = str(provider or "").strip()
+            if is_local_hf_provider(provider_name):
+                return {"ok": False, "error": "本地 HuggingFace 加载不支持远程获取模型"}
+            url = normalize_base_url_for_provider(provider_name, base_url)
+            if not url:
+                return {"ok": False, "error": "缺少接口地址 base_url"}
+            key = (api_key or "").strip() or None
+            headers = dict(extra_headers or {})
+            if config_id is not None and not key:
+                stored = self.store.get_config(int(config_id)) or {}
+                key = (stored.get("api_key") or "").strip() or None
+                if not headers and stored.get("extra_headers"):
+                    headers = dict(stored.get("extra_headers") or {})
+            client = UniversalLLMClient(
+                base_url=url,
+                api_key=key,
+                timeout=float(timeout or 30.0),
+                provider=provider_name or None,
+                extra_headers=headers,
+            )
+            models = client.list_models()
+            return {
+                "ok": True,
+                "models": [{"id": m, "label": m} for m in models],
+                "count": len(models),
+                "provider": client.provider,
+            }
+        except UniversalLLMError as exc:
+            logger.error(f"List remote models failed: {exc}")
+            return {
+                "ok": False,
+                "error": str(exc),
+                "status_code": getattr(exc, "status_code", None),
+            }
+        except Exception as exc:
+            logger.error(f"List remote models failed: {exc}")
+            return {"ok": False, "error": str(exc)}
+
     def get_supported_providers(self) -> Dict[str, Any]:
         """
         Get list of supported AI providers
@@ -326,75 +472,185 @@ class ModelConfigManager:
         Returns:
             Dict with provider information
         """
-        providers = []
+        # 本地 OpenAI 兼容 / 进程内 HF 一般不强制 api_key
+        no_key_required = {"lm_studio", "ollama", LOCAL_HF_PROVIDER, "hf", "local_hf"}
+        providers: List[Dict[str, Any]] = [
+            {
+                "name": LOCAL_HF_PROVIDER,
+                "base_url": LOCAL_HF_BASE_URL,
+                "requires_api_key": False,
+                "local_load": True,
+                "model_types": ["embedding", "rerank"],
+                "label": "HuggingFace 本地加载",
+            }
+        ]
+        # Embedding/Rerank 仅展示能接 Qwen3 系的接入商；其余只给 chat
+        retrieval_providers = {"lm_studio", "qwen", "dashscope"}
+        chat_only = {
+            "ollama",
+            "openai",
+            "deepseek",
+            "kimi",
+            "moonshot",
+            "doubao",
+            "xai",
+            "gemini",
+        }
         for provider, base_url in UniversalLLMClient.PROVIDER_ENDPOINTS.items():
+            if provider in retrieval_providers:
+                model_types = ["chat", "embedding", "rerank"]
+            elif provider in chat_only:
+                model_types = ["chat"]
+            else:
+                model_types = ["chat"]
             providers.append({
                 "name": provider,
                 "base_url": base_url,
-                "requires_api_key": provider not in {"lm_studio"},
+                "requires_api_key": provider not in no_key_required,
+                "local_load": False,
+                "model_types": model_types,
             })
         
         return {"ok": True, "providers": providers}
 
     def bootstrap_default_configs(self) -> Dict[str, Any]:
-        """Seed built-in provider configs if they do not exist."""
+        """Seed built-in provider configs if they do not exist（三类：chat / embedding / rerank）。"""
         presets = [
+            # —— 知识库分析（chat）——
             {
                 "name": "local-lm-studio",
                 "provider": "lm_studio",
                 "base_url": "http://127.0.0.1:1234",
                 "model_name": "local-model",
-                "description": "本地模型（LM Studio/OpenAI compatible）",
+                "model_type": "chat",
+                "timeout": 180.0,
+                "description": "本地分析模型（LM Studio / OpenAI compatible）",
                 "is_default": True,
+            },
+            {
+                "name": "local-ollama",
+                "provider": "ollama",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "model_name": "qwen2.5:7b",
+                "model_type": "chat",
+                "timeout": 180.0,
+                "description": "本地分析模型（Ollama OpenAI compatible，无需 api_key）",
             },
             {
                 "name": "openai-default",
                 "provider": "openai",
                 "base_url": "https://api.openai.com/v1",
                 "model_name": "gpt-4o-mini",
-                "description": "OpenAI 默认配置（需填写 api_key）",
+                "model_type": "chat",
+                "description": "OpenAI 分析模型（需填写 api_key）",
             },
             {
                 "name": "deepseek-default",
                 "provider": "deepseek",
                 "base_url": "https://api.deepseek.com/v1",
                 "model_name": "deepseek-chat",
-                "description": "DeepSeek 默认配置（需填写 api_key）",
+                "model_type": "chat",
+                "description": "DeepSeek 分析模型（需填写 api_key）",
             },
             {
                 "name": "qwen-default",
                 "provider": "qwen",
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "model_name": "qwen-plus",
-                "description": "Qwen 默认配置（需填写 api_key）",
+                "model_type": "chat",
+                "description": "通义千问分析模型（国内普通接口；Team 请改业务空间域名）",
             },
             {
                 "name": "doubao-default",
                 "provider": "doubao",
                 "base_url": "https://ark.cn-beijing.volces.com/api/v3",
                 "model_name": "doubao-pro-32k",
-                "description": "豆包默认配置（需填写 api_key）",
+                "model_type": "chat",
+                "description": "豆包分析模型（需填写 api_key）",
             },
             {
                 "name": "xai-default",
                 "provider": "xai",
                 "base_url": "https://api.x.ai/v1",
                 "model_name": "grok-beta",
-                "description": "xAI 默认配置（需填写 api_key）",
+                "model_type": "chat",
+                "description": "xAI 分析模型（需填写 api_key）",
             },
             {
                 "name": "gemini-default",
                 "provider": "gemini",
                 "base_url": "https://generativelanguage.googleapis.com/v1beta",
                 "model_name": "gemini-pro",
-                "description": "Gemini 默认配置（需填写 api_key）",
+                "model_type": "chat",
+                "description": "Gemini 分析模型（需填写 api_key）",
             },
             {
                 "name": "kimi-default",
                 "provider": "kimi",
                 "base_url": "https://api.moonshot.cn/v1",
                 "model_name": "moonshot-v1-8k",
-                "description": "Kimi 默认配置（需填写 api_key）",
+                "model_type": "chat",
+                "description": "Kimi 分析模型（需填写 api_key）",
+            },
+            # —— Embedding ——
+            {
+                "name": "local-hf-embedding",
+                "provider": LOCAL_HF_PROVIDER,
+                "base_url": LOCAL_HF_BASE_URL,
+                "model_name": "Qwen/Qwen3-Embedding-0.6B",
+                "model_type": "embedding",
+                "description": "进程内 HF 本地 Embedding（从 models/hf_cache 加载；设为默认即生效）",
+                "is_default": True,
+                "max_input_length": 8192,
+            },
+            {
+                "name": "openai-embedding",
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "model_name": "text-embedding-3-large",
+                "model_type": "embedding",
+                "description": "OpenAI Embedding（需填写 api_key）；维度以服务商为准",
+                "max_tokens": 8192,
+                "max_input_length": 8192,
+                "dimension": 3072,
+            },
+            {
+                "name": "local-embedding-openai-compat",
+                "provider": "lm_studio",
+                "base_url": "http://127.0.0.1:1234",
+                "model_name": "text-embedding-local",
+                "model_type": "embedding",
+                "description": "本地 OpenAI 兼容 Embedding（LM Studio 等）",
+                "max_input_length": 8192,
+            },
+            # —— Reranker ——
+            {
+                "name": "local-hf-rerank",
+                "provider": LOCAL_HF_PROVIDER,
+                "base_url": LOCAL_HF_BASE_URL,
+                "model_name": "Qwen/Qwen3-Reranker-0.6B",
+                "model_type": "rerank",
+                "description": "进程内 HF 本地 Reranker（从 models/hf_cache 加载；设为默认即生效）",
+                "is_default": True,
+                "max_input_length": 512,
+            },
+            {
+                "name": "openai-compat-rerank",
+                "provider": "lm_studio",
+                "base_url": "http://127.0.0.1:1234",
+                "model_name": "rerank-local",
+                "model_type": "rerank",
+                "description": "本地 OpenAI 兼容 Rerank 端点（若网关提供 /rerank）",
+                "max_input_length": 512,
+            },
+            {
+                "name": "cohere-style-rerank-placeholder",
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "model_name": "rerank-placeholder",
+                "model_type": "rerank",
+                "description": "占位：可改为实际 Rerank 服务商地址与模型名",
+                "max_input_length": 512,
             },
         ]
 
@@ -412,12 +668,15 @@ class ModelConfigManager:
                 base_url=item["base_url"],
                 model_name=item["model_name"],
                 api_key=None,
-                model_type="chat",
-                temperature=0.2,
-                timeout=30.0,
+                model_type=str(item.get("model_type") or "chat"),
+                temperature=0.2 if normalize_model_type(item.get("model_type")) == "chat" else 0.0,
+                max_tokens=item.get("max_tokens"),
+                timeout=float(item.get("timeout") or 60.0),
                 is_active=True,
                 is_default=bool(item.get("is_default", False)),
                 description=item.get("description"),
+                dimension=item.get("dimension"),
+                max_input_length=item.get("max_input_length") or item.get("max_tokens"),
             )
             if result.get("ok"):
                 created.append(name)
@@ -430,6 +689,10 @@ class ModelConfigManager:
             "skipped": skipped,
             "count_created": len(created),
             "count_skipped": len(skipped),
+            "message": (
+                f"初始化完成：新建 {len(created)}，跳过 {len(skipped)}。"
+                "Embedding/Rerank 可选 HuggingFace 本地加载；设为默认会应用到当前进程运行时。"
+            ),
         }
     
     @staticmethod

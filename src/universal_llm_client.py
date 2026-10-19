@@ -25,16 +25,20 @@ class UniversalLLMClient:
     """Universal LLM Client supporting multiple OpenAI-compatible providers."""
 
     PROVIDER_ENDPOINTS = {
+        # 本地优先，新增模型时下拉更靠前
+        "ollama": "http://127.0.0.1:11434/v1",
+        "lm_studio": "http://localhost:1234/v1",
         "openai": "https://api.openai.com/v1",
         "deepseek": "https://api.deepseek.com/v1",
-        "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",  # 国内北京共享域名
         "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        # 国际请用：https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        # 国内业务空间/Team：https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
         "doubao": "https://ark.cn-beijing.volces.com/api/v3",
         "xai": "https://api.x.ai/v1",
         "gemini": "https://generativelanguage.googleapis.com/v1beta",
         "kimi": "https://api.moonshot.cn/v1",
         "moonshot": "https://api.moonshot.cn/v1",
-        "lm_studio": "http://localhost:1234/v1",
     }
 
     def __init__(
@@ -105,7 +109,15 @@ class UniversalLLMClient:
                 path = "/v1"
             return urlunparse(parsed._replace(path=path))
 
-        if provider_lower in {"openai", "deepseek", "xai", "kimi", "moonshot", "lm_studio"}:
+        if provider_lower in {
+            "openai",
+            "deepseek",
+            "xai",
+            "kimi",
+            "moonshot",
+            "lm_studio",
+            "ollama",
+        }:
             if not path:
                 path = "/v1"
         elif provider_lower in {"qwen", "dashscope"}:
@@ -125,7 +137,9 @@ class UniversalLLMClient:
             return "openai"
         if "deepseek.com" in url_lower:
             return "deepseek"
-        if "dashscope.aliyuncs.com" in url_lower or "aliyun" in url_lower:
+        if "dashscope-intl.aliyuncs.com" in url_lower:
+            return "qwen"
+        if "dashscope.aliyuncs.com" in url_lower or "maas.aliyuncs.com" in url_lower or "aliyun" in url_lower:
             return "qwen"
         if "volces.com" in url_lower or "bytedance" in url_lower:
             return "doubao"
@@ -135,6 +149,9 @@ class UniversalLLMClient:
             return "gemini"
         if "moonshot.cn" in url_lower or "kimi" in url_lower:
             return "kimi"
+        # 11434 是 Ollama 默认端口，优先于笼统的本机判定
+        if ":11434" in url_lower or "ollama" in url_lower:
+            return "ollama"
         if "localhost" in url_lower or "127.0.0.1" in url_lower:
             return "lm_studio"
         return "unknown"
@@ -291,11 +308,12 @@ class UniversalLLMClient:
         return kwargs
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # 裸 dict 在 openai SDK>=1.x 的 construct_type 会炸（get_args(dict)==()）
         logger.info("LLM request: provider=%s base_url=%s path=%s", self.provider, self.base_url, path)
         try:
             response = self._client.post(
                 path,
-                cast_to=dict,
+                cast_to=Dict[str, Any],
                 body=payload,
                 options={"timeout": self.timeout},
             )
@@ -532,13 +550,68 @@ class UniversalLLMClient:
         try:
             resp = self._post("/rerank", payload)
         except UniversalLLMError as exc:
-            if exc.status_code in {400, 404}:
+            # 网关未实现 /rerank 时常给 400/404；记一下别反复撞
+            if exc.status_code in {400, 404, 405, 501} or self._looks_like_missing_rerank(exc):
                 self.rerank_supported = False
                 return None
             raise
 
+        # 有的本地网关（如 LM Studio）对未知路由仍回 200 + {"error": "..."}
+        if isinstance(resp, dict) and resp.get("error"):
+            logger.warning(
+                "Rerank endpoint unavailable at %s: %s",
+                self.base_url,
+                resp.get("error"),
+            )
+            self.rerank_supported = False
+            return None
+
+        try:
+            scores = self._parse_rerank_response(resp, expected=len(docs))
+        except UniversalLLMError as exc:
+            logger.warning("Rerank parse failed, mark unsupported: %s", exc)
+            self.rerank_supported = False
+            return None
+
         self.rerank_supported = True
-        return self._parse_rerank_response(resp, expected=len(docs))
+        return scores
+
+    @staticmethod
+    def _looks_like_missing_rerank(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "unexpected endpoint" in msg or (
+            "/rerank" in msg and ("404" in msg or "not found" in msg or "405" in msg)
+        )
+
+    def list_models(self) -> List[str]:
+        """拉取 OpenAI 兼容 GET /models，返回模型 id 列表。"""
+        try:
+            response = self._client.models.list(timeout=self.timeout)
+        except Exception as exc:
+            self._raise_request_error(exc, "/models")
+
+        resp_dict = self._to_dict(response)
+        data = resp_dict.get("data", [])
+        if not isinstance(data, list):
+            # SDK 也可能直接给可迭代对象
+            try:
+                data = list(response)  # type: ignore[arg-type]
+            except Exception:
+                raise UniversalLLMError("Models response missing data") from None
+
+        ids: List[str] = []
+        seen: set[str] = set()
+        for item in data:
+            if isinstance(item, dict):
+                mid = str(item.get("id") or "").strip()
+            else:
+                mid = str(getattr(item, "id", "") or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            ids.append(mid)
+        ids.sort(key=str.lower)
+        return ids
 
 
 LmStudioClient = UniversalLLMClient

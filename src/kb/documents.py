@@ -44,4 +44,12 @@ def list_chunks(
     items = list(result.get("items", []))
     if is_internal_filename is not None:
         items = [item for item in items if not is_internal_filename(item.get("filename"))]
-    return {"ok": True, "count": len(items), "chunks": items}
+    total = int(result.get("total") or result.get("count") or len(items))
+    return {
+        "ok": True,
+        "count": total,
+        "total": total,
+        "page_index": int(result.get("page_index") or page_index),
+        "page_size": int(result.get("page_size") or page_size),
+        "chunks": items,
+    }

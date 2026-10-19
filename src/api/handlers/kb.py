@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from typing import Any, Dict
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 
 def handle_get_kb(http: Any, api: Any, path: str) -> bool:
-    """处理 GET /kb/documents、/kb/chunks、/kb/settings。"""
+    """处理 GET /kb/documents、/kb/chunks、/kb/settings、/kb/document/{name}/original。"""
     if path == "/kb/documents":
         http._ok(api.list_documents())
         return True
@@ -39,6 +39,46 @@ def handle_get_kb(http: Any, api: Any, path: str) -> bool:
     if path == "/kb/settings":
         # KB-20：当前生效的检索 / 分片参数（可读）
         http._ok({"ok": True, "settings": api.get_retrieval_settings()})
+        return True
+
+    # GET /kb/document/{name}/original — 下载或预览原文件
+    if path.startswith("/kb/document/") and path.endswith("/original"):
+        raw_name = path[len("/kb/document/") : -len("/original")].strip().strip("/")
+        filename = unquote(raw_name).strip()
+        if not filename:
+            http._bad_request("缺少 filename 参数")
+            return True
+        params = http._parse_query_params()
+        as_json = str(http._get_param_value(params, "as", "") or "").lower() in {
+            "json",
+            "1",
+            "true",
+        }
+        try:
+            info = api.get_document_original(filename, prefer_text=as_json)
+        except FileNotFoundError:
+            http._not_found()
+            return True
+        except ValueError as exc:
+            http._bad_request(str(exc) or "无效文件名")
+            return True
+        if as_json or info.get("is_text"):
+            http._ok({"ok": True, **info})
+            return True
+        # 二进制：直接下发文件流
+        body = info.get("content_bytes") or b""
+        name = str(info.get("filename") or filename)
+        content_type = str(info.get("content_type") or "application/octet-stream")
+        http.send_response(200)
+        http.send_header("Content-Type", content_type)
+        http.send_header("Content-Length", str(len(body)))
+        http.send_header(
+            "Content-Disposition",
+            f"attachment; filename*=UTF-8''{quote(name)}",
+        )
+        http._cors_headers()
+        http.end_headers()
+        http.wfile.write(body)
         return True
 
     return False

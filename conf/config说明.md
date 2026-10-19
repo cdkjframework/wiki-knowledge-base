@@ -17,7 +17,9 @@
 
 - `default_k`：默认返回的检索结果数（整数，建议 5～8；KB-20 可在页面热更新）
 - `max_search_results`：最大检索结果数（整数，建议 ≥10）
-- `min_source_similarity`：来源最小相似度硬阈值（0～1；`0` 表示关闭硬过滤，便于长尾召回对比实验）
+- `min_source_similarity`：候选过滤线（0～1；`0` 表示关闭）。它比的是内部排序分，不是正确率；候选最终能否作为来源由 `knowledge_base.retrieval.evidence` 证据门槛决定
+- `hybrid_enabled`：是否启用 KB-01 混合检索（布尔，默认 true；false 时仅向量 + 重排）
+- `rrf_k`：RRF 融合常数（整数，建议 60；越大则排名差影响越平滑）
 
 ## db
 
@@ -57,7 +59,7 @@
 - `embedding`：向量模型配置
   - `model`：embedding 模型名
   - `dimension`：向量维度（整数或 null 自动）
-  - `device`：推理设备（auto/cpu/cuda）
+  - `device`：推理设备（auto/cpu/cuda/directml；directml 见 requirements.directml.txt）
   - `local_files_only`：仅本地模型（布尔）
   - `use_lm_studio`：是否用 LM Studio 提供 embedding（布尔）
 - `rerank`：重排序模型配置
@@ -88,6 +90,19 @@
   - `min_candidates`：最小候选数（整数）
   - `embed_weight`：embedding 检索权重（小数）
   - `rerank_weight`：rerank 权重（小数）
+  - `hybrid_enabled`：是否启用 BM25∪向量混合（布尔；与 `search.hybrid_enabled` 同义，面板以 search 为准）
+  - `rrf_k`：RRF 常数（整数；与 `search.rrf_k` 同义）
+  - `max_rerank_candidates`：送入重排的候选总数（整数，默认 8）
+  - `max_rerank_chunks_per_file`：截断到重排名额前，每个文件先最多占几个名额（整数，默认 3）；名额没用完会按融合顺序补回，避免长文件占满重排
+  - `evidence`：证据门槛。问答来源、答案上下文、评测反例都走这一层；阈值检索的无阈值回退也绕不过它
+    - `enabled`：是否启用（布尔，默认 true；关闭后所有候选直接放行）
+    - `min_rerank_probability`：重排概率达到该值才算相关（0～1，默认 0.5）。远程 `/rerank` 的 relevance_score 直接当概率，本地交叉编码器的 logit 经 sigmoid 换算
+    - `min_vector_similarity`：重排不可用时，向量余弦的下限（默认 0.5）
+    - `strong_vector_similarity`：重排判不相关但向量余弦很高时仍放行的线（默认 0.75）
+    - `entity_miss_rerank_probability`：查询含缩写/编号（如 PMP、KB-10）而证据里没出现该实体或别名时，重排需达到的更高概率（默认 0.8）
+    - `aliases_file`：实体别名 JSON（默认 `conf/retrieval/entity_aliases.json`）
+    - `extra_generic_terms`：额外的查询泛词（数组）；泛词不参与 BM25 字面匹配
+    - 以上数值为保守初值，请用 `python -m src.eval.cli --dataset <含反例题的题集>` 看误召回率与 Recall 后再调
 - `ocr`：OCR 配置
   - `enabled`：是否启用 OCR（布尔）
   - `engine`：OCR 引擎，可选 `llm` 或 `paddleocr`
@@ -102,7 +117,7 @@
     - 说明：llm 专属模型参数统一放在该子节点，`ocr` 顶层不再重复配置这些字段
     - `model_name`：视觉大模型名称，当前支持 Qwen2-VL
     - `prompt`：OCR 提示词
-    - `device`：推理设备（cpu/cuda/auto）
+    - `device`：推理设备（`cpu` / `cuda` / `directml` / `auto`）。Windows iGPU 用 `directml` 需独立环境安装 `requirements.directml.txt`，也可用环境变量 `KB_DEVICE=directml`
     - `dtype`：模型精度（auto/fp16/bf16/fp32）
     - `max_new_tokens`：最大生成 token 数
     - `min_pixels` / `max_pixels`：图像像素范围控制

@@ -23,6 +23,8 @@ class RetrievalSettingsTests(unittest.TestCase):
             "min_source_similarity": 0.0,
             "chunk_size": 800,
             "chunk_overlap": 120,
+            "hybrid_enabled": True,
+            "rrf_k": 60,
         }
         settings = normalize_settings(
             {
@@ -31,18 +33,30 @@ class RetrievalSettingsTests(unittest.TestCase):
                 "min_source_similarity": 0.2,
                 "chunk_size": 500,
                 "chunk_overlap": 80,
+                "hybrid_enabled": True,
+                "rrf_k": 60,
             },
             current=current,
         )
         self.assertEqual(settings["default_k"], 8)
         self.assertEqual(settings["chunk_size"], 500)
+        self.assertTrue(settings["hybrid_enabled"])
+        self.assertEqual(settings["rrf_k"], 60)
 
         cfg: dict = {}
         apply_settings_to_config(cfg, settings)
         self.assertEqual(cfg["search"]["default_k"], 8)
         self.assertEqual(cfg["knowledge_base"]["chunking"]["size"], 500)
+        self.assertTrue(cfg["search"]["hybrid_enabled"])
 
-        kb = SimpleNamespace(default_k=2, max_search_results=3, chunk_size=800, chunk_overlap=120)
+        kb = SimpleNamespace(
+            default_k=2,
+            max_search_results=3,
+            chunk_size=800,
+            chunk_overlap=120,
+            hybrid_enabled=True,
+            rrf_k=60,
+        )
         search_cfg: dict = {"min_source_similarity": 0.55}
         apply_settings_to_runtime(kb, search_cfg, settings)
         snap = snapshot_from_runtime(kb, search_cfg)
@@ -51,6 +65,7 @@ class RetrievalSettingsTests(unittest.TestCase):
         self.assertEqual(snap["min_source_similarity"], 0.2)
         self.assertEqual(snap["chunk_size"], 500)
         self.assertEqual(snap["chunk_overlap"], 80)
+        self.assertTrue(snap["hybrid_enabled"])
         self.assertEqual(snap["chunking_strategy"], "fixed")
 
     def test_reject_bad_ranges(self) -> None:
@@ -85,12 +100,18 @@ class RetrievalSettingsTests(unittest.TestCase):
                 max_search_results=10,
                 chunk_size=800,
                 chunk_overlap=120,
+                hybrid_enabled=True,
+                rrf_k=60,
             )
             api._search_cfg = {
                 "default_k": 5,
                 "max_search_results": 10,
                 "min_source_similarity": 0.0,
+                "hybrid_enabled": True,
+                "rrf_k": 60,
             }
+            # object.__new__ 跳过了 __init__，这里只测 config.json 回写路径，不接数据库
+            api._kb_settings_store = None
             api._load_project_config = lambda: {  # type: ignore[method-assign]
                 "search": dict(api._search_cfg),
                 "knowledge_base": {"chunking": {"size": 800, "overlap": 120}},
@@ -164,11 +185,15 @@ class RetrievalSettingsTests(unittest.TestCase):
                     max_search_results=10,
                     chunk_size=800,
                     chunk_overlap=120,
+                    hybrid_enabled=True,
+                    rrf_k=60,
                 )
                 self._search_cfg = {
                     "default_k": 5,
                     "max_search_results": 10,
                     "min_source_similarity": 0.0,
+                    "hybrid_enabled": True,
+                    "rrf_k": 60,
                 }
 
             def get_retrieval_settings(self):

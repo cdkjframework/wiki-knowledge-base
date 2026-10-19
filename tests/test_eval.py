@@ -238,6 +238,96 @@ class KbSearcherAdapterTests(unittest.TestCase):
         self.assertEqual(kb.calls, [("问题", 7, 1.2)])
 
 
+class NegativeCaseTests(unittest.TestCase):
+    """反例题（库里本来没答案）：只统计误召回率，不拉低正例指标。"""
+
+    def test_parse_negative_case(self) -> None:
+        case = parse_case({"query": "PMP内容", "expect_no_source": True}, 1)
+        self.assertTrue(case.expect_no_source)
+        self.assertEqual(case.positives, ())
+
+    def test_negative_with_positives_is_rejected(self) -> None:
+        with self.assertRaises(DatasetError):
+            parse_case({"query": "x", "expect_no_source": True, "positives": ["a.md"]}, 1)
+
+    def test_false_recall_rate_and_positive_metrics_are_separate(self) -> None:
+        cases = [
+            parse_case({"id": "p", "query": "问题一", "positives": ["a.md"]}, 1),
+            parse_case({"id": "n1", "query": "PMP内容", "expect_no_source": True}, 2),
+            parse_case({"id": "n2", "query": "PMP", "expect_no_source": True}, 3),
+        ]
+        report = run_evaluation(
+            _fake_searcher({"问题一": ["a.md"], "PMP内容": ["银行手册.pdf"]}), cases
+        )
+        summary = report["summary"]
+        self.assertEqual(summary["positive_case_count"], 1)
+        self.assertEqual(summary["negative_case_count"], 2)
+        self.assertAlmostEqual(summary["false_recall_rate"], 0.5)
+        self.assertEqual(summary["false_recall_ids"], ["n1"])
+        # 反例题不参与平均，正例全对就该是满分
+        self.assertAlmostEqual(summary["recall@1"], 1.0)
+        self.assertAlmostEqual(summary["mrr"], 1.0)
+
+    def test_no_negative_cases_gives_none_rate(self) -> None:
+        cases = [parse_case({"id": "p", "query": "问题一", "positives": ["a.md"]}, 1)]
+        report = run_evaluation(_fake_searcher({"问题一": ["a.md"]}), cases)
+        self.assertIsNone(report["summary"]["false_recall_rate"])
+
+    def test_default_golden_set_has_pmp_negative(self) -> None:
+        cases = load_dataset(default_dataset_path())
+        negatives = {c.query for c in cases if c.expect_no_source}
+        self.assertIn("PMP内容", negatives)
+
+
+class GatedSearcherTests(unittest.TestCase):
+    class _GatedKb:
+        def __init__(self) -> None:
+            from src.kb.evidence_gate import EvidencePolicy
+
+            self.evidence_policy = EvidencePolicy()
+            self._last_search_details: list[dict] = []
+
+        def search(self, query, k=None, relevance_threshold=None):
+            self._last_search_details = [
+                {
+                    "filename": "junk.pdf",
+                    "vector_similarity": 0.3,
+                    "rerank_similarity": 0.05,
+                    "rerank_status": "ok",
+                    "channels": ["bm25"],
+                },
+                {
+                    "filename": "good.md",
+                    "vector_similarity": 0.7,
+                    "rerank_similarity": 0.9,
+                    "rerank_status": "ok",
+                    "channels": ["vector"],
+                },
+            ]
+            return [("junk.pdf", "本章内容", 0.6), ("good.md", "报销流程", 0.25)]
+
+    def test_gate_filters_like_the_api(self) -> None:
+        searcher = make_kb_searcher(self._GatedKb())
+        self.assertEqual(searcher("报销流程", 5), ["good.md"])
+        details = {d["filename"]: d for d in searcher.last_details}
+        self.assertFalse(details["junk.pdf"]["passed_evidence"])
+        self.assertEqual(details["junk.pdf"]["channels"], ["bm25"])
+        self.assertTrue(details["good.md"]["passed_evidence"])
+
+    def test_gate_can_be_turned_off(self) -> None:
+        searcher = make_kb_searcher(self._GatedKb(), apply_evidence_gate=False)
+        self.assertEqual(searcher("报销流程", 5), ["junk.pdf", "good.md"])
+
+    def test_runner_records_details_and_gate_flag(self) -> None:
+        searcher = make_kb_searcher(self._GatedKb())
+        cases = [parse_case({"id": "n", "query": "PMP内容", "expect_no_source": True}, 1)]
+        report = run_evaluation(searcher, cases)
+        self.assertTrue(report["config"]["evidence_gate"])
+        row = report["cases"][0]
+        self.assertTrue(row["false_recall"])
+        self.assertEqual(len(row["details"]), 2)
+
+
 class CliTests(unittest.TestCase):
     def test_validate_accepts_default_golden_set(self) -> None:
         self.assertEqual(eval_cli.main(["--validate"]), 0)

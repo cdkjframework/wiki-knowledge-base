@@ -28,6 +28,7 @@ def write_query_sse(
     session_id: str | None,
     deep_think: bool,
     enable_mcp_auto: bool,
+    min_source_similarity: float | None = None,
 ) -> None:
     """向客户端写出完整的 query SSE 事件流（meta / delta / thinking_delta / done）。"""
     http._send_sse_headers()
@@ -48,6 +49,7 @@ def write_query_sse(
             session_id=session_id,
             deep_think=deep_think,
             enable_mcp_auto=enable_mcp_auto,
+            min_source_similarity=min_source_similarity,
         )
         http._send_sse(
             "meta",
@@ -56,13 +58,21 @@ def write_query_sse(
                 "session_id": session_id,
                 "user_id": user_id,
                 "mcp_execution": data.get("mcp_execution"),
+                "evidence_status": data.get("evidence_status"),
             },
         )
         finish_reason = "stop"
         answer_text = ""
         thinking_text = ""
         thinking_summary = data.get("thinking_summary")
-        if generate_answer:
+        fixed_answer = str(data.get("fixed_answer") or "")
+        if generate_answer and fixed_answer:
+            # 无证据拒答：不走模型流，也不走思考拆分，事件结构和正常回答一致
+            answer_parts.append(fixed_answer)
+            http._send_sse("delta", {"delta": fixed_answer})
+            answer_text = fixed_answer
+            thinking_summary = None
+        elif generate_answer:
             split_state = api._init_stream_split_state()
             thinking_parts: List[str] = []
             for piece in data.get("stream", []):
@@ -130,6 +140,7 @@ def write_query_sse(
             "user_id": user_id,
             "thinking": thinking_text,
             "thinking_summary": thinking_summary,
+            "evidence_status": data.get("evidence_status"),
             "messages": [
                 {"role": "system", "content": data.get("system_prompt", "")},
                 *data.get("history_messages", []),
@@ -146,6 +157,7 @@ def write_query_sse(
                 "thinking": thinking_text,
                 "thinking_summary": thinking_summary,
                 "mcp_execution": data.get("mcp_execution"),
+                "evidence_status": data.get("evidence_status"),
             },
         )
     except Exception as exc:

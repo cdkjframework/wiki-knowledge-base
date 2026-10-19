@@ -62,6 +62,15 @@ def _print_summary(report: Dict[str, Any]) -> None:
     ndcg_key = f"ndcg@{config['ndcg_k']}"
     print(f"NDCG@{config['ndcg_k']}\t\t{summary[ndcg_key]:.4f}")
     print(f"MRR\t\t{summary['mrr']:.4f}")
+    if summary.get("negative_case_count"):
+        rate = summary.get("false_recall_rate")
+        print("-" * 32)
+        print(
+            f"反例题：{summary['negative_case_count']}    "
+            f"误召回率：{(rate or 0.0):.4f}（证据门槛：{'开' if config.get('evidence_gate') else '关'}）"
+        )
+        if summary.get("false_recall_ids"):
+            print(f"误召回题号：{'、'.join(summary['false_recall_ids'])}")
     latency = summary["latency_ms"]
     print("-" * 32)
     print(
@@ -80,11 +89,29 @@ def _check_gates(report: Dict[str, Any], args: argparse.Namespace) -> bool:
         ok = value >= args.min_recall5
         passed = passed and ok
         print(f"[{'PASS' if ok else 'FAIL'}] Recall@5 {value:.4f} >= {args.min_recall5}")
+    if args.min_recall3 is not None:
+        value = float(summary.get("recall@3", 0.0))
+        ok = value >= args.min_recall3
+        passed = passed and ok
+        print(f"[{'PASS' if ok else 'FAIL'}] Recall@3 {value:.4f} >= {args.min_recall3}")
     if args.min_ndcg10 is not None:
         value = float(summary.get("ndcg@10", 0.0))
         ok = value >= args.min_ndcg10
         passed = passed and ok
         print(f"[{'PASS' if ok else 'FAIL'}] NDCG@10 {value:.4f} >= {args.min_ndcg10}")
+    if args.max_latency_p95 is not None:
+        value = float(summary.get("latency_ms", {}).get("p95", 0.0) or 0.0)
+        ok = value <= args.max_latency_p95
+        passed = passed and ok
+        print(f"[{'PASS' if ok else 'FAIL'}] latency p95 {value:.1f}ms <= {args.max_latency_p95}")
+    if args.max_false_recall is not None:
+        rate = summary.get("false_recall_rate")
+        if rate is None:
+            print("[SKIP] 题集没有反例题，跳过误召回率检查")
+        else:
+            ok = float(rate) <= args.max_false_recall
+            passed = passed and ok
+            print(f"[{'PASS' if ok else 'FAIL'}] 误召回率 {float(rate):.4f} <= {args.max_false_recall}")
     return passed
 
 
@@ -108,6 +135,46 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="把完整报告 JSON 打到标准输出")
     parser.add_argument("--min-recall5", type=float, default=None, help="质量线：Recall@5 下限，不达标退出码 1")
     parser.add_argument("--min-ndcg10", type=float, default=None, help="质量线：NDCG@10 下限，不达标退出码 1")
+    parser.add_argument(
+        "--min-recall3",
+        type=float,
+        default=None,
+        help="质量线：Recall@3 下限（KB-01），不达标退出码 1",
+    )
+    parser.add_argument(
+        "--max-latency-p95",
+        type=float,
+        default=None,
+        help="质量线：单题检索延迟 p95 上限（毫秒），不达标退出码 1",
+    )
+    parser.add_argument(
+        "--max-false-recall",
+        type=float,
+        default=None,
+        help="质量线：反例题误召回率上限（0～1），不达标退出码 1",
+    )
+    parser.add_argument(
+        "--no-evidence-gate",
+        action="store_true",
+        help="跑分时不走证据门槛，只看裸检索结果（对比门槛前后用）",
+    )
+    parser.add_argument(
+        "--hybrid",
+        choices=("on", "off", "default"),
+        default="default",
+        help="覆盖运行时 hybrid_enabled：on/off；default 表示沿用配置",
+    )
+    parser.add_argument(
+        "--no-rerank",
+        action="store_true",
+        help="临时将 rerank_weight 置 0，用于测召回融合延迟（不含交叉编码器重排）",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=3,
+        help="计时前预热检索次数（默认 3，排除冷启动；0 关闭）",
+    )
     args = parser.parse_args(argv)
 
     dataset_path = Path(args.dataset) if args.dataset else default_dataset_path()
@@ -138,14 +205,26 @@ def main(argv: List[str] | None = None) -> int:
         return 2
 
     kb = KnowledgeBase(dimension=args.dimension, persist_dir=args.persist_dir)
+    if args.hybrid == "on":
+        kb.hybrid_enabled = True
+    elif args.hybrid == "off":
+        kb.hybrid_enabled = False
+    if args.no_rerank:
+        kb.rerank_weight = 0.0
+        kb.embed_weight = 1.0
     top_k = _resolve_top_k(args.top_k, kb, ks, int(args.ndcg_k))
     report = run_evaluation(
-        make_kb_searcher(kb, relevance_threshold=args.threshold),
+        make_kb_searcher(
+            kb,
+            relevance_threshold=args.threshold,
+            apply_evidence_gate=not args.no_evidence_gate,
+        ),
         cases,
         top_k=top_k,
         ks=ks,
         ndcg_k=int(args.ndcg_k),
         dataset_path=dataset_path,
+        warmup=int(args.warmup),
         extra_config={
             "relevance_threshold": args.threshold,
             "persist_dir": args.persist_dir or "",
@@ -154,6 +233,18 @@ def main(argv: List[str] | None = None) -> int:
             "chunk_size": int(getattr(kb, "chunk_size", 0) or 0),
             "chunk_overlap": int(getattr(kb, "chunk_overlap", 0) or 0),
             "max_search_results": int(getattr(kb, "max_search_results", 0) or 0),
+            "hybrid_enabled": bool(getattr(kb, "hybrid_enabled", True)),
+            "rrf_k": int(getattr(kb, "rrf_k", 60) or 60),
+            "max_rerank_candidates": int(getattr(kb, "max_rerank_candidates", 8) or 8),
+            "rerank_weight": float(getattr(kb, "rerank_weight", 0.0) or 0.0),
+            "no_rerank": bool(args.no_rerank),
+            "max_rerank_chunks_per_file": int(getattr(kb, "max_rerank_chunks_per_file", 3) or 3),
+            "evidence_policy": (
+                kb.evidence_policy.to_dict() if hasattr(kb, "evidence_policy") else None
+            ),
+            "embedding_consistency": (
+                kb.embedding_consistency() if hasattr(kb, "embedding_consistency") else None
+            ),
         },
     )
 

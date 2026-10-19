@@ -11,6 +11,11 @@ Golden 题集的格式、加载与校验。
 positives 支持这些等价写法（兼容旧题集）：
 positives / positive_filenames / expected_filenames（数组）、
 expected_filename / filename（字符串）。
+
+反例题：库里本来就没有答案的问题，写 `"expect_no_source": true` 且不填 positives；
+跑分时只要返回了任何来源就记一次「误召回」，不参与 Recall / MRR / NDCG 平均：
+
+    {"id": "neg-001", "query": "PMP内容", "expect_no_source": true, "tags": ["反例"]}
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ class GoldenCase:
     positives: Tuple[str, ...]
     tags: Tuple[str, ...] = field(default=())
     note: str = ""
+    expect_no_source: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -42,6 +48,7 @@ class GoldenCase:
             "positives": list(self.positives),
             "tags": list(self.tags),
             "note": self.note,
+            "expect_no_source": self.expect_no_source,
         }
 
 
@@ -86,9 +93,15 @@ def parse_case(obj: Dict[str, Any], lineno: int, fallback_id: str = "") -> Golde
         if isinstance(value, str) and value.strip() and value.strip() not in positives:
             positives.append(value.strip())
 
-    if not positives:
+    expect_no_source = obj.get("expect_no_source") is True
+    if expect_no_source and positives:
         raise DatasetError(
-            f"第 {lineno} 行缺少标准答案；请填 positives / expected_filename 之一"
+            f"第 {lineno} 行同时写了 expect_no_source 和标准答案，二者只能选一个"
+        )
+    if not positives and not expect_no_source:
+        raise DatasetError(
+            f"第 {lineno} 行缺少标准答案；请填 positives / expected_filename 之一，"
+            "或用 expect_no_source: true 标成反例题"
         )
 
     raw_tags = obj.get("tags")
@@ -105,6 +118,7 @@ def parse_case(obj: Dict[str, Any], lineno: int, fallback_id: str = "") -> Golde
         positives=tuple(positives),
         tags=tags,
         note=str(obj.get("note") or "").strip(),
+        expect_no_source=expect_no_source,
     )
 
 

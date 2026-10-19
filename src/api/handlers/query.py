@@ -126,6 +126,14 @@ def handle_get_query(http: Any, api: Any, path: str) -> bool:
             http._bad_request("enable_mcp_auto 必须是布尔值")
             return True
 
+    min_source_similarity = None
+    if "min_source_similarity" in params and params["min_source_similarity"]:
+        try:
+            min_source_similarity = float(params["min_source_similarity"][-1])
+        except Exception:
+            http._bad_request("min_source_similarity 必须是数字")
+            return True
+
     if stream_mode:
         write_query_sse(
             http,
@@ -144,6 +152,7 @@ def handle_get_query(http: Any, api: Any, path: str) -> bool:
             session_id=session_id,
             deep_think=deep_think,
             enable_mcp_auto=enable_mcp_auto,
+            min_source_similarity=min_source_similarity,
         )
         return True
 
@@ -163,6 +172,7 @@ def handle_get_query(http: Any, api: Any, path: str) -> bool:
             session_id=session_id,
             deep_think=deep_think,
             enable_mcp_auto=enable_mcp_auto,
+            min_source_similarity=min_source_similarity,
         ),
         page_index=page_index,
     )
@@ -222,6 +232,8 @@ def handle_post_query(http: Any, api: Any, path: str, body: Dict[str, Any]) -> b
         max_tokens = int(max_tokens_raw)
     enable_mcp_auto = bool(body.get("enable_mcp_auto", False))
     stream_mode = bool(body.get("stream", False))
+    min_sim_raw = body.get("min_source_similarity")
+    min_source_similarity = None if min_sim_raw is None or min_sim_raw == "" else float(min_sim_raw)
 
     logger.info(
         "HTTP /query POST: stream=%s query_len=%d user_id=%s session_id=%s generate_answer=%s deep_think=%s",
@@ -251,6 +263,7 @@ def handle_post_query(http: Any, api: Any, path: str, body: Dict[str, Any]) -> b
             session_id=session_id,
             deep_think=deep_think,
             enable_mcp_auto=enable_mcp_auto,
+            min_source_similarity=min_source_similarity,
         )
         return True
 
@@ -270,6 +283,7 @@ def handle_post_query(http: Any, api: Any, path: str, body: Dict[str, Any]) -> b
             session_id=session_id,
             deep_think=deep_think,
             enable_mcp_auto=enable_mcp_auto,
+            min_source_similarity=min_source_similarity,
         ),
         page_index=page_index,
     )

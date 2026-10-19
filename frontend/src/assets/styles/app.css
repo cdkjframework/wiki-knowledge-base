@@ -1,11 +1,48 @@
 .app-layout {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   background: var(--color-bg-subtle);
+}
+
+.app-layout > .el-container {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .app-aside {
   border-right: 1px solid var(--color-border);
   background: var(--color-surface);
+  overflow: auto;
+}
+
+.app-aside .el-menu {
+  border-right: none;
+  background: transparent;
+  padding: 8px 10px;
+}
+
+.app-aside .el-menu-item {
+  height: 44px;
+  line-height: 44px;
+  margin: 2px 0;
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+}
+
+.app-aside .el-menu-item:hover {
+  background: var(--color-primary-subtle) !important;
+  color: var(--color-primary) !important;
+}
+
+.app-aside .el-menu-item.is-active {
+  background: var(--color-primary-subtle) !important;
+  color: var(--color-primary) !important;
+  font-weight: 600;
+}
+
+.app-aside .el-menu-item .el-icon {
+  color: inherit;
 }
 
 .app-brand {
@@ -46,13 +83,33 @@
 }
 
 .app-main {
-  padding: 20px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px;
+  box-sizing: border-box;
+}
+
+/* 检索问答页：内容区不再整页滚动，由页内消息列表滚动，输入框钉在底部 */
+.app-main--chat,
+.app-main:has(.qa-layout) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 20px;
+}
+
+.app-main--chat > *,
+.app-main:has(.qa-layout) > * {
+  flex: 1;
+  min-height: 0;
 }
 
 .page-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 12px;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   padding: 20px 24px;
 }
 

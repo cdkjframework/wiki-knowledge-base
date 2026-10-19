@@ -50,13 +50,80 @@ def _project_root() -> Path:
     return resolve_project_root()
 
 
-def make_kb_searcher(kb: Any, relevance_threshold: float | None = None) -> SearchFn:
-    """把 KnowledgeBase.search 的 (filename, chunk, distance) 结果削成文件名序列。"""
+_DETAIL_KEYS = (
+    "channels",
+    "final_similarity",
+    "vector_similarity",
+    "vector_score_source",
+    "bm25_score",
+    "rerank_raw",
+    "rerank_similarity",
+    "rerank_status",
+)
+
+
+def make_kb_searcher(
+    kb: Any,
+    relevance_threshold: float | None = None,
+    *,
+    apply_evidence_gate: bool = True,
+) -> SearchFn:
+    """
+    把 KnowledgeBase.search 的 (filename, chunk, distance) 结果削成文件名序列。
+
+    默认和问答接口走同一个证据门槛：反例题量的是「最终会不会被当成来源」，
+    只看裸检索的话向量库永远有近邻，误召回率恒为 100%，没有参考价值。
+    每次检索的分通道明细挂在 `_search.last_details`，runner 会写进报告。
+    """
+    try:
+        from src.kb.evidence_gate import EvidencePolicy, evaluate_evidence
+    except ImportError:  # pragma: no cover
+        EvidencePolicy = None  # type: ignore[assignment]
+        evaluate_evidence = None  # type: ignore[assignment]
 
     def _search(query: str, top_k: int) -> List[str]:
         results = kb.search(query, k=top_k, relevance_threshold=relevance_threshold)
-        return [str(row[0]) for row in results if row]
+        detail_map: Dict[str, Dict[str, Any]] = {}
+        for item in list(getattr(kb, "_last_search_details", None) or []):
+            name = str(item.get("filename") or "")
+            if name and name not in detail_map:
+                detail_map[name] = dict(item)
 
+        items: List[Dict[str, Any]] = []
+        for row in results:
+            if not row:
+                continue
+            item = dict(detail_map.get(str(row[0])) or {})
+            item["filename"] = str(row[0])
+            item["text"] = str(row[1]) if len(row) > 1 else ""
+            items.append(item)
+
+        policy = getattr(kb, "evidence_policy", None)
+        gated = (
+            apply_evidence_gate
+            and evaluate_evidence is not None
+            and EvidencePolicy is not None
+            and isinstance(policy, EvidencePolicy)
+        )
+        if gated:
+            decision = evaluate_evidence(query, items, policy)
+            passed_ids = {id(x) for x in decision.passed}
+        else:
+            passed_ids = {id(x) for x in items}
+
+        _search.last_details = [  # type: ignore[attr-defined]
+            {
+                "filename": item["filename"],
+                "passed_evidence": id(item) in passed_ids,
+                "evidence": item.get("evidence"),
+                **{key: item.get(key) for key in _DETAIL_KEYS if key in item},
+            }
+            for item in items
+        ]
+        return [item["filename"] for item in items if id(item) in passed_ids]
+
+    _search.last_details = []  # type: ignore[attr-defined]
+    _search.evidence_gate = bool(apply_evidence_gate)  # type: ignore[attr-defined]
     return _search
 
 
@@ -69,12 +136,15 @@ def run_evaluation(
     ndcg_k: int = DEFAULT_NDCG_K,
     dataset_path: str | Path | None = None,
     extra_config: Dict[str, Any] | None = None,
+    warmup: int = 0,
 ) -> Dict[str, Any]:
     """
     跑完整套题集并汇总成报告字典。
 
     单题检索抛异常不会中断整轮：记成 0 分并留下 error 字段，
     否则一条脏数据就让几十分钟的跑分白跑。
+
+    warmup：计时前先跑若干次检索，排除模型冷启动对 p95 的干扰。
     """
     if not cases:
         raise ValueError("题集为空，无法跑分")
@@ -82,14 +152,29 @@ def run_evaluation(
     k_list = sorted({int(k) for k in ks if int(k) > 0})
     fetch_k = max([top_k, ndcg_k, *k_list]) if k_list else max(top_k, ndcg_k)
 
+    warm_n = max(0, int(warmup or 0))
+    if warm_n > 0:
+        warm_q = cases[0].query if cases else "warmup"
+        print(f"[eval] warmup x{warm_n} …", flush=True)
+        for _ in range(warm_n):
+            try:
+                search_fn(warm_q, min(3, fetch_k))
+            except Exception:
+                pass
+
     case_rows: List[Dict[str, Any]] = []
     all_flags: List[List[bool]] = []
     latencies: List[float] = []
+    negative_rows: List[Dict[str, Any]] = []
     started = time.perf_counter()
 
-    for case in cases:
+    total_cases = len(cases)
+    for case_i, case in enumerate(cases, 1):
         t0 = time.perf_counter()
         error = ""
+        if hasattr(search_fn, "last_details"):
+            # 本题检索抛异常时别把上一题的明细串进来
+            search_fn.last_details = []  # type: ignore[attr-defined]
         try:
             ranked = list(search_fn(case.query, fetch_k))
         except Exception as exc:  # 单题失败不拖垮整轮
@@ -97,6 +182,40 @@ def run_evaluation(
             error = f"{type(exc).__name__}: {exc}"
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         latencies.append(elapsed_ms)
+        details = list(getattr(search_fn, "last_details", None) or [])
+
+        if case.expect_no_source:
+            false_recall = bool(ranked)
+            if case_i == 1 or case_i == total_cases or case_i % 5 == 0 or false_recall:
+                print(
+                    f"[eval] {case_i}/{total_cases} id={case.id} "
+                    f"latency={elapsed_ms:.0f}ms 反例误召回={false_recall}",
+                    flush=True,
+                )
+            neg_row: Dict[str, Any] = {
+                "id": case.id,
+                "query": case.query,
+                "tags": list(case.tags),
+                "expect_no_source": True,
+                "retrieved": ranked[:fetch_k],
+                "false_recall": false_recall,
+                "latency_ms": round(elapsed_ms, 3),
+            }
+            if details:
+                neg_row["details"] = details
+            if error:
+                neg_row["error"] = error
+            negative_rows.append(neg_row)
+            case_rows.append(neg_row)
+            continue
+
+        # 长跑时给控制台进度，避免数十分钟无输出
+        if case_i == 1 or case_i == total_cases or case_i % 5 == 0:
+            print(
+                f"[eval] {case_i}/{total_cases} id={case.id} "
+                f"latency={elapsed_ms:.0f}ms hit={any(matched_flags(ranked, case.positives))}",
+                flush=True,
+            )
 
         flags = matched_flags(ranked, case.positives)
         all_flags.append(flags)
@@ -116,22 +235,34 @@ def run_evaluation(
         for k in k_list:
             row[f"recall@{k}"] = recall_at_k(flags, total_pos, k)
             row[f"precision@{k}"] = precision_at_k(flags, k)
+        if details:
+            row["details"] = details
         if error:
             row["error"] = error
         case_rows.append(row)
 
     total_seconds = time.perf_counter() - started
+    positive_rows = [row for row in case_rows if not row.get("expect_no_source")]
 
     summary: Dict[str, Any] = {
         "case_count": len(case_rows),
+        "positive_case_count": len(positive_rows),
+        "negative_case_count": len(negative_rows),
         "failed_count": sum(1 for row in case_rows if row.get("error")),
-        "mrr": mean([float(row["rr"]) for row in case_rows]),
-        f"ndcg@{ndcg_k}": mean([float(row[f"ndcg@{ndcg_k}"]) for row in case_rows]),
+        "mrr": mean([float(row["rr"]) for row in positive_rows]),
+        f"ndcg@{ndcg_k}": mean([float(row[f"ndcg@{ndcg_k}"]) for row in positive_rows]),
+        # 反例题里返回了任何来源的比例；没有反例题时为 None，别让 0 看起来像「全对」
+        "false_recall_rate": (
+            mean([1.0 if row["false_recall"] else 0.0 for row in negative_rows])
+            if negative_rows
+            else None
+        ),
+        "false_recall_ids": [row["id"] for row in negative_rows if row["false_recall"]],
     }
     for k in k_list:
-        summary[f"recall@{k}"] = mean([float(row[f"recall@{k}"]) for row in case_rows])
+        summary[f"recall@{k}"] = mean([float(row[f"recall@{k}"]) for row in positive_rows])
         summary[f"precision@{k}"] = mean(
-            [float(row[f"precision@{k}"]) for row in case_rows]
+            [float(row[f"precision@{k}"]) for row in positive_rows]
         )
         summary[f"hit@{k}"] = mean([hit_at_k(flags, k) for flags in all_flags])
     summary["latency_ms"] = {
@@ -147,6 +278,8 @@ def run_evaluation(
         "fetch_k": int(fetch_k),
         "ks": k_list,
         "ndcg_k": int(ndcg_k),
+        "warmup": warm_n,
+        "evidence_gate": bool(getattr(search_fn, "evidence_gate", False)),
     }
     if extra_config:
         config.update(extra_config)

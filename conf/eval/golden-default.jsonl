@@ -66,3 +66,9 @@
 {"id": "kb-062", "query": "项目怎么安装和启动", "positives": ["README.md"], "tags": ["部署运维"]}
 {"id": "kb-063", "query": "服务默认监听哪个端口", "positives": ["README.md"], "tags": ["部署运维"]}
 {"id": "kb-064", "query": "怎么把文档导入知识库", "positives": ["README.md"], "tags": ["部署运维"]}
+# 反例题：本语料里没有答案，返回任何来源都算误召回（PMP 误召回修复的回归基线）
+{"id": "neg-001", "query": "PMP内容", "expect_no_source": true, "tags": ["反例"], "note": "仅凭「内容」泛词不应召回来源"}
+{"id": "neg-002", "query": "PMP", "expect_no_source": true, "tags": ["反例"]}
+{"id": "neg-003", "query": "PMP考试报名条件有哪些", "expect_no_source": true, "tags": ["反例"]}
+{"id": "neg-004", "query": "XK-7731型号的保修期是多久", "expect_no_source": true, "tags": ["反例"], "note": "库里不存在的产品编号"}
+{"id": "neg-005", "query": "今天股市行情怎么样", "expect_no_source": true, "tags": ["反例"]}

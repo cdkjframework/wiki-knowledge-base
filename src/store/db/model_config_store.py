@@ -39,6 +39,8 @@ class ModelConfigStore:
                 is_active BOOLEAN DEFAULT TRUE,
                 is_default BOOLEAN DEFAULT FALSE,
                 description TEXT,
+                dimension INTEGER,
+                max_input_length INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -61,6 +63,8 @@ class ModelConfigStore:
                 is_active BOOLEAN DEFAULT TRUE,
                 is_default BOOLEAN DEFAULT FALSE,
                 description TEXT,
+                dimension INT,
+                max_input_length INT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_provider (provider),
@@ -74,6 +78,25 @@ class ModelConfigStore:
         except Exception as exc:
             logger.error(f"Failed to create model_configs table: {exc}")
             raise
+        self._ensure_columns()
+
+    def _ensure_columns(self) -> None:
+        """增量列：dimension / max_input_length（旧库 CREATE IF NOT EXISTS 不会补列）。"""
+        specs = (
+            ("dimension", "INTEGER"),
+            ("max_input_length", "INTEGER"),
+        )
+        for col, typ in specs:
+            try:
+                if self.db.backend == "postgresql":
+                    self.db.run_write(
+                        f"ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS {col} {typ}"
+                    )
+                else:
+                    # MySQL：无 IF NOT EXISTS 时重复添加会报错，忽略即可
+                    self.db.run_write(f"ALTER TABLE model_configs ADD COLUMN {col} {typ} NULL")
+            except Exception as exc:
+                logger.debug("model_configs.%s ensure skipped: %s", col, exc)
     
     def add_config(
         self,
@@ -91,11 +114,13 @@ class ModelConfigStore:
         is_active: bool = True,
         is_default: bool = False,
         description: Optional[str] = None,
+        dimension: Optional[int] = None,
+        max_input_length: Optional[int] = None,
     ) -> int:
         """Add new model configuration"""
-        # If setting as default, unset other defaults
+        # If setting as default, unset other defaults of the same model_type
         if is_default:
-            self._unset_all_defaults()
+            self._unset_defaults(model_type=model_type)
         
         extra_headers_json = json.dumps(extra_headers or {})
         extra_params_json = json.dumps(extra_params or {})
@@ -105,8 +130,8 @@ class ModelConfigStore:
             INSERT INTO model_configs (
                 name, provider, base_url, api_key, model_name, model_type,
                 temperature, max_tokens, timeout, extra_headers, extra_params,
-                is_active, is_default, description
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)
+                is_active, is_default, description, dimension, max_input_length
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
             RETURNING id
             """
         else:  # MySQL
@@ -114,14 +139,14 @@ class ModelConfigStore:
             INSERT INTO model_configs (
                 name, provider, base_url, api_key, model_name, model_type,
                 temperature, max_tokens, timeout, extra_headers, extra_params,
-                is_active, is_default, description
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                is_active, is_default, description, dimension, max_input_length
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
         
         params = (
             name, provider, base_url, api_key, model_name, model_type,
             temperature, max_tokens, timeout, extra_headers_json, extra_params_json,
-            is_active, is_default, description
+            is_active, is_default, description, dimension, max_input_length,
         )
         
         if self.db.backend == "postgresql":
@@ -160,7 +185,7 @@ class ModelConfigStore:
         allowed_fields = {
             "name", "provider", "base_url", "api_key", "model_name", "model_type",
             "temperature", "max_tokens", "timeout", "extra_headers", "extra_params",
-            "is_active", "is_default", "description"
+            "is_active", "is_default", "description", "dimension", "max_input_length",
         }
         
         updates = []
@@ -171,7 +196,12 @@ class ModelConfigStore:
                 continue
             
             if key == "is_default" and value:
-                self._unset_all_defaults()
+                # 同类内互斥：按目标 model_type（若本次一并改 type）或当前行 type
+                target_type = kwargs.get("model_type")
+                if not target_type:
+                    current = self.get_config(config_id)
+                    target_type = (current or {}).get("model_type") or "chat"
+                self._unset_defaults(model_type=str(target_type))
             
             if key in {"extra_headers", "extra_params"} and value is not None:
                 value = json.dumps(value)
@@ -236,13 +266,21 @@ class ModelConfigStore:
         finally:
             conn.close()
     
-    def get_default_config(self) -> Optional[Dict[str, Any]]:
-        """Get default model configuration"""
-        sql = "SELECT * FROM model_configs WHERE is_default = TRUE AND is_active = TRUE LIMIT 1"
+    def get_default_config(self, model_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get default model configuration；可按 model_type 限定（chat/embedding/rerank）。"""
+        if model_type:
+            sql = (
+                "SELECT * FROM model_configs WHERE is_default = TRUE AND is_active = TRUE "
+                "AND model_type = %s LIMIT 1"
+            )
+            params: tuple = (model_type,)
+        else:
+            sql = "SELECT * FROM model_configs WHERE is_default = TRUE AND is_active = TRUE LIMIT 1"
+            params = ()
         conn = self.db.connect()
         try:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, params)
                 row = cur.fetchone()
                 if not row:
                     return None
@@ -286,19 +324,30 @@ class ModelConfigStore:
             conn.close()
     
     def set_default(self, config_id: int) -> bool:
-        """Set a configuration as default"""
-        self._unset_all_defaults()
+        """Set a configuration as default within its model_type."""
+        current = self.get_config(config_id)
+        if not current:
+            return False
+        model_type = str(current.get("model_type") or "chat")
+        self._unset_defaults(model_type=model_type)
         sql = "UPDATE model_configs SET is_default = TRUE, updated_at = %s WHERE id = %s"
         count = self.db.run_write(sql, (datetime.now(timezone.utc), config_id))
         if count > 0:
-            logger.info(f"Set model config id={config_id} as default")
+            logger.info("Set model config id=%s as default (type=%s)", config_id, model_type)
         return count > 0
-    
-    def _unset_all_defaults(self):
-        """Unset all default flags"""
-        sql = "UPDATE model_configs SET is_default = FALSE WHERE is_default = TRUE"
-        self.db.run_write(sql)
-    
+
+    def _unset_defaults(self, model_type: str | None = None) -> None:
+        """Unset default flags; scope to one model_type when provided."""
+        if model_type:
+            sql = "UPDATE model_configs SET is_default = FALSE WHERE is_default = TRUE AND model_type = %s"
+            self.db.run_write(sql, (model_type,))
+        else:
+            sql = "UPDATE model_configs SET is_default = FALSE WHERE is_default = TRUE"
+            self.db.run_write(sql)
+
+    def _unset_all_defaults(self) -> None:
+        """Unset all default flags (兼容旧调用)."""
+        self._unset_defaults(model_type=None)    
     def _row_to_dict(self, columns: List[str], row: tuple) -> Dict[str, Any]:
         """Convert database row to dictionary"""
         result = dict(zip(columns, row))

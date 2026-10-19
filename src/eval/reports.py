@@ -46,6 +46,8 @@ def summarize(data: Dict[str, Any], path: Path | None = None) -> Dict[str, Any]:
         "recall@5": summary.get("recall@5"),
         "ndcg@10": summary.get("ndcg@10"),
         "mrr": summary.get("mrr"),
+        "negative_case_count": summary.get("negative_case_count") or 0,
+        "false_recall_rate": summary.get("false_recall_rate"),
         "latency_p95_ms": latency.get("p95"),
         "total_seconds": summary.get("total_seconds"),
         "top_k": config.get("top_k"),

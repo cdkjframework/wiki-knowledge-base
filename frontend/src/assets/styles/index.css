@@ -22,7 +22,8 @@ a {
 .page-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   padding: 20px 24px;
 }
 

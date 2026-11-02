@@ -96,6 +96,15 @@ class GenericDocumentParser(BaseDocumentParser):
                 except Exception as exc:
                     self._logger.debug("清理上传临时文件失败: %s", exc)
         if not (text or "").strip():
-            text = self.decode_uploaded_text_bytes(data, encoding=encoding)
+            # 已知二进制格式抽空后不要再当文本解码，否则 PNG/PDF 会冒出乱码“入库成功”
+            binary_exts = (
+                self.IMAGE_EXTENSIONS
+                | self.WORD_EXTENSIONS
+                | {".pdf", ".ofd", ".xls", ".xlsx", ".xlsm", ".wps", ".pws"}
+            )
+            if encoding is not None or ext not in binary_exts:
+                text = self.decode_uploaded_text_bytes(data, encoding=encoding)
+            else:
+                text = ""
         self._log_extracted_text(f"upload:{filename}", text)
         return text

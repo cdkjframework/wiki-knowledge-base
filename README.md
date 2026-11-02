@@ -1,73 +1,37 @@
-<p align="center">
-  <img src="assets/logo2.png" width="320" />
-</p>
-
-<p align="center">
-  <a href="https://framewiki.com/">https://framewiki.com/</a>
-</p>
-
-<p align="center">
-  <a href="README.md">简体中文</a> |
-  <a href="README-EN.md">English</a>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/License-MulanPSL2-blue" />
-  <img src="https://img.shields.io/badge/Chat-SSE-ff8c00" />
-  <img src="https://img.shields.io/badge/Vector-FAISS%20%7C%20zvec-6f42c1" />
-  <img src="https://img.shields.io/badge/Status-Active-2e7d32" />
-</p>
+﻿<div align="center">
+ <img src="assets/logo2.png" alt="WIKI 本地知识库" width="320" />
+ <p><a href="https://framewiki.com/">https://framewiki.com/</a></p>
+ <p>
+  <img src="https://img.shields.io/badge/License-MulanPSL2-blue" alt="License" />
+  <img src="https://img.shields.io/badge/Chat-SSE-ff8c00" alt="SSE" />
+  <img src="https://img.shields.io/badge/Vector-FAISS-6f42c1" alt="FAISS" />
+  <img src="https://img.shields.io/badge/Status-Active-2e7d32" alt="Status" />
+ </p>
+</div>
 
 # WIKI 本地知识库
 
-WIKI 本地知识库是一个本地优先、可私有化部署的开源知识库服务，提供向量检索、重排、对话式问答、模型管理和 Web 控制台能力，适合构建企业内部知识问答、团队文档助手、个人知识中枢等场景。
-
 本项目是一个本地优先的开源知识库服务，融合向量检索、重排与对话式问答能力，内置轻量 HTTP API 与 Web 控制台，支持 SSE 流式响应，适合构建私有化知识问答应用。
 
-## 文档导航
+## 亮点
 
-- [项目亮点](#项目亮点)
-- [适用场景](#适用场景)
-- [功能对比](#功能对比)
-- [系统架构](#系统架构)
-- [项目结构](#项目结构)
-- [快速开始](#快速开始)
-- [Web 控制台](#web-控制台)
-- [API 文档](#api-文档)
-- [配置说明](#配置说明)
-- [模型与部署建议](#模型与部署建议)
-- [运维与脚本](#运维与脚本)
-- [数据与安全](#数据与安全)
-- [贡献与许可](#贡献与许可)
+- 本地私有化存储，向量索引与分片持久化。
+- 检索 + 重排流程提升回答相关性。
+- SSE 流式响应，适配聊天场景。
+- 支持 `user_id` 与 `session_id` 的上下文会话。
+- 文档导入（单文档、批量上传、目录重建）。
+- 分片管理（查看、编辑、删除、重建）。
+- 多模型支持，兼容 OpenAI、DeepSeek、Qwen、Doubao、xAI、Gemini、Kimi、LM Studio 等。
 
-## 项目亮点
-
-- 本地优先部署，知识库、向量索引和会话数据可完全留在私有环境内。
-- 内置检索 + 重排链路，提升召回质量和答案相关性。
-- 支持 SSE 流式响应，适合聊天问答与前端逐字输出。
-- 支持 `user_id` 与 `session_id` 上下文会话管理。
-- 支持文本新增、文件上传、批量导入、目录重建等知识导入方式。
-- 支持分片查看、编辑、删除、重建，便于精细化维护知识内容。
-- 内置模型配置管理，兼容 OpenAI、DeepSeek、Qwen、Doubao、xAI、Gemini、Kimi、LM Studio 等多种提供商。
-- 同时支持内存、数据库、Redis 等不同存储后端，适合从单机到多实例部署。
-
-## 适用场景
-
-- 企业内部知识问答平台
-- 团队规范、制度、SOP 检索助手
-- 个人学习资料、技术笔记、本地文档中枢
-- 私有化 AI 问答系统原型验证
-- 需要离线或局域网部署的知识应用
-
-## 功能对比
+## 功能点对比表
 
 | 功能模块 | 开源社区版 | 商业授权版（规划/已实现） |
 | --- | --- | --- |
 | 本地知识库存储 | ✅ | ✅ |
-| 向量检索（FAISS / zvec） | ✅ | ✅ |
+| FAISS 向量检索 | ✅ | ✅ |
 | 文档导入/批量上传 | ✅ | ✅ |
-| 文档识别 | 仅文字识别 | 支持图片 / 扫描 PDF 等 OCR |
-| 文档分片 | 固定长度分片 | 语义递归分片 |
+| 文档识别 | 仅文字识别 | 支持 DOC 文档与图片/PDF/OFD 的 OCR（paddleOCR 或 Qwen/Qwen2-VL-2B-Instruct） |
+| 文档分片 | 固定长度分片 | 语义分片（按内容语义自动切分） |
 | 重排（Rerank） | ✅ | ✅ |
 | 多模型支持 | ✅ | ✅ |
 | SSE 流式响应 | ✅ | ✅ |
@@ -75,226 +39,107 @@ WIKI 本地知识库是一个本地优先、可私有化部署的开源知识库
 | API 接口 | ✅ | ✅ |
 | 用户/会话上下文 | ✅ | ✅ |
 | Redis 高并发支持 | ✅ | ✅ |
-| 权限与多用户 | - | ✅ |
-| MCP 能力（模型上下文协议） | - | ✅ |
-| 插件/扩展机制 | - | ✅ |
-| 企业级安全能力 | - | ✅ |
+| 权限与多用户 | - | ✅（企业/团队多用户与权限管理） |
+| 文档语义分片 | - | ✅（按语义自动切分，提升检索效果） |
+| MCP 能力（模型上下文协议） | - | ✅（支持多模型/多后端统一调度） |
+| 插件/扩展机制 | - | ✅（支持自定义插件与扩展） |
+| 企业级安全 | - | ✅（更细粒度权限、审计、加密等） |
 | 商业技术支持 | - | ✅ |
 | SLA 服务保障 | - | ✅ |
 | 专属定制开发 | - | ✅ |
 
-## 系统架构
+## 架构
 
 ```text
-Client / Browser (frontend/ Vue 控制台)
-         |
-         v
-HTTP API (src/api/ · 业务路径前缀 /api)
-         |
-         +-- Web UI (frontend/dist，由后端托管)
-         +-- Session / History Store (src/store/)
-         |     +-- memory
-         |     +-- db
-         |     +-- redis
-         |
-         +-- Knowledge Base (src/knowledge_base.py)
-                                 +-- document parsers
-                                 +-- chunking
-                                 +-- embeddings
-                                 +-- vector index (FAISS / zvec / numpy)
-                                 +-- reranker
-                                 +-- chat model / LLM client
+client (web/app.js)
+ |
+ v
+HTTP API (src/api.py)
+ |
+ +-- store (src/store)
+ |     +-- db (history, session)
+ |     +-- redis (session)
+ |
+ +-- knowledge base (src/knowledge_base.py)
+        +-- embeddings
+        +-- FAISS index
+        +-- reranker
+        +-- LLM chat
+        +-- document parser facade (src/document_parsers/__init__.py)
+               +-- BaseDocumentParser
+               +-- GenericDocumentParser
+               +-- PdfDocumentParser
+               +-- OfficeDocumentParser
+               +-- ImageDocumentParser
+               +-- OcrParser
 ```
 
-**系统整体架构图**
-![](assets/system-architecture.png)
+当前代码中，知识库主流程通过 `KnowledgeBaseDocumentParser` 组合多个解析类，不再使用旧的 `src/document_parser.py` 与 `src/ocr_parser.py` 入口文件。
 
-核心执行流程：
+架构与模块职责说明：
 
-1. 文档导入后会被切分为 chunk，并写入本地知识库存储目录。
-2. Chunk 经过 Embedding 向量化后进入向量索引（FAISS / zvec 等）。
-3. 用户提问时先做向量召回，再做 Rerank 重排。
-4. 最终上下文与历史会话拼装后交给聊天模型生成答案。
-5. Web UI 与 API 都通过统一的 HTTP 服务对外提供能力。
-
-**核心数据流图（RAG 检索问答流程）**
-![](assets/rag-dataflow.png)
-
-## 项目结构
-
-```text
-.
-├─ src/
-│  ├─ api/                       # HTTP API（http_server + handlers，前缀 /api）
-│  ├─ main.py                    # 启动入口
-│  ├─ knowledge_base.py          # 知识库核心逻辑
-│  ├─ document_parsers/          # 按类型拆分的文档解析
-│  ├─ universal_llm_client.py    # 多模型统一客户端
-│  ├─ model_config_manager.py    # 模型配置管理
-│  ├─ windows_service.py         # Windows 服务入口
-│  └─ store/                     # 会话/历史存储实现
-├─ frontend/                     # Vue3 Web 控制台（构建产物 frontend/dist）
-├─ conf/                         # 运行配置（优先 conf/config.json）
-├─ assets/                       # README 截图与静态资源
-├─ config.json                   # 兼容保留的主配置文件
-├─ config.multi-provider.example.json
-├─ manage_service.ps1            # Windows 服务管理脚本
-├─ manage_service.sh             # Linux systemd 服务管理脚本
-├─ encrypt_secret.py             # 密钥加密工具
-├─ ingest_to_kb_store.py         # 知识导入工具
-├─ migrate_to_sessions_table.py  # 历史数据迁移脚本
-└─ tune_threshold.py             # 检索阈值调优脚本
-```
+| 目录 / 类 | 职责 |
+| --- | --- |
+| `src/` | 后端核心代码目录，包含 API、知识库、模型调用、日志与服务启动逻辑。 |
+| `src/api.py` | HTTP API 入口，负责请求路由、上传、查询与流式响应。 |
+| `src/knowledge_base.py` | 知识库主流程核心，负责文档导入、切分、向量化、检索、重排与问答。 |
+| `src/chat_model.py` | 本地聊天模型或对话能力的封装。 |
+| `src/universal_llm_client.py` | 统一兼容 OpenAI 风格接口的多厂商 LLM 客户端。 |
+| `src/lm_studio_client.py` | LM Studio 相关调用封装。 |
+| `src/model_config_manager.py` | 模型配置管理与加载辅助逻辑。 |
+| `src/logger_config.py` | 日志初始化与日志级别配置。 |
+| `src/main.py` | 服务启动入口。 |
+| `src/windows_service.py` | Windows 服务模式相关逻辑。 |
+| `src/secret_cipher.py` | 密钥加解密辅助工具。 |
+| `src/document_parsers/` | 文档解析子模块目录，负责按文件类型拆分解析职责。 |
+| `src/document_parsers/__init__.py` | 导出解析相关类，并提供 `KnowledgeBaseDocumentParser` 组合入口。 |
+| `KnowledgeBaseDocumentParser` | 知识库实际使用的组合解析器，对外提供统一解析入口。 |
+| `src/document_parsers/base.py` / `BaseDocumentParser` | 公共初始化、OCR 配置、文本/XML/二进制/表格辅助逻辑。 |
+| `src/document_parsers/generic_parser.py` / `GenericDocumentParser` | 通用文件解析入口、上传文件处理和 fallback 路由。 |
+| `src/document_parsers/pdf_parser.py` / `PdfDocumentParser` | PDF、Marker、页级 OCR 与相关 PDF 辅助处理。 |
+| `src/document_parsers/office_parser.py` / `OfficeDocumentParser` | DOCX、DOC、Excel、OFD、PWS 与 Word 转 PDF。 |
+| `src/document_parsers/image_parser.py` / `ImageDocumentParser` | 图片解析，优先 Pix2Text，失败后回退 OCR。 |
+| `src/document_parsers/ocr_parser.py` / `OcrParser` | 本地视觉大模型 OCR 与 PaddleOCR 的统一封装。 |
+| `src/store/` | 存储抽象与具体实现目录，包含数据库与 Redis 相关逻辑。 |
+| `src/test/` | 项目内的 Python 测试目录。 |
+| `web/` | 内置 Web UI 静态资源目录。 |
+| `docs/` | 部署、日志、模型、可选解析器等专题文档目录。 |
+| `assets/` | README 与界面相关资源文件目录。 |
 
 ## 快速开始
 
-### 运行要求
-
-- Python 3.10 及以上
-- Node.js（构建 Web 控制台时需要，建议 18+）
-- 推荐使用虚拟环境 `venv`
-- 如需 GPU 推理，请准备对应 CUDA 环境
-- 如需 Redis / MySQL / PostgreSQL，请提前安装并配置
-
-### 1. 安装依赖
+### 1) 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-如需打包构建：
+### 2) 配置
+
+按需修改 `config.json`（数据库、Redis、模型与上下文配置等）。
+
+### 3) 启动服务
 
 ```bash
-pip install -r requirements.build.txt
-```
-### 2. 配置服务
-
-编辑 `conf/config.json`（优先）或根目录 `config.json`（兼容），重点关注以下配置：
-
-- `server`：HTTP 服务监听地址与端口
-- `db`：历史记录存储后端与数据库连接
-- `session`：会话后端，可选 `memory` 或 `redis`
-- `knowledge_base.storage`：知识库数据目录、模型缓存目录与向量后端（`faiss` / `zvec` / `numpy`）
-- `knowledge_base.embedding`：Embedding 模型配置
-- `knowledge_base.rerank`：Rerank 模型配置
-- `knowledge_base.chat`：对话模型配置
-- `knowledge_base.lm_studio`：兼容 OpenAI 风格接口的模型服务地址
-- `chat_context`：上下文轮数与开关
-
-多提供商配置示例可参考 `config.multi-provider.example.json`。
-
-### 3. 构建 Web 控制台并启动服务
-
-```bash
-cd frontend
-npm install
-npm run build
-cd ..
 python -m src.main
 ```
 
-如果已通过包方式安装，也可以使用：
-
-```bash
-knowledge-base
-```
-
-默认监听地址取自配置中的 `server.host` 和 `server.port`，默认端口为 `5000`。
-
-### 4. 常用启动参数
-
-```bash
-python -m src.main --host 127.0.0.1 --port 5000
-```
-
-可用参数：
-
-- `--host`：指定监听地址
-- `--port`：指定监听端口
-- `--no-preload-embedding`：启动时不预热 Embedding 模型
-- `--no-preload-reranker`：启动时不预热 Reranker 模型
-
-### 5. 环境变量
-
-- `KB_CONFIG_PATH`：指定自定义配置文件路径
-- `KB_PRELOAD_EMBEDDING`：是否在启动时预热 Embedding 模型
-- `KB_PRELOAD_RERANKER`：是否在启动时预热 Reranker 模型
-- `KB_WARMUP_STRICT`：模型预热失败时是否中止启动
+默认监听：`http://127.0.0.1:5000`
 
 ## Web 控制台
 
-启动后可访问：
+访问 `http://127.0.0.1:5000/ui/` 使用内置 Web UI。
 
-- `http://127.0.0.1:5000/`：Web 控制台首页
-- `http://127.0.0.1:5000/retrieval-qa`：聊天 / 检索问答
-- `http://127.0.0.1:5000/kb/management`：知识库管理
-- `http://127.0.0.1:5000/model/management`：模型管理
+功能概览（来自 `web/`）：
 
-功能概览：
-
-- 聊天：新建会话、历史记录、SSE 流式回答、深度思考开关（默认关闭）、复制回答、来源查看
-- 知识库管理：新增文本、上传文件、批量上传、文档筛选、分片编辑/删除/重建、检索参数设置、统计信息
-- 模型管理：新增/编辑模型配置、启用/停用、设置默认、连通性测试、初始化预设配置
+- 聊天页面：新建会话、历史记录、SSE 流式回答、深度思考开关、复制回答、来源查看。
 
 **聊天**
 ![](assets/chat.png)
 
-**知识库管理**
-![](assets/kb.png)
+- 知识库管理：新增文本、上传文件、批量上传、文档列表筛选、分片管理（编辑/删除/重建）、检索参数设置、统计信息。
 
-**分片管理**
-![](assets/kb-fp.png)
-
-**模型管理**
-![](assets/model.png)
-
-## API 文档
-
-- 控制台入口：顶栏「登录」右侧的 **API 文档**（路由 `/api-docs`，Vue 页面）
-- 业务接口统一前缀：`/api`（如 `/api/query`）
-
-**API 文档**
-![](assets/api.png)
-
-## 配置说明
-
-### 核心配置字段
-
-`conf/config.json`（或兼容的根目录 `config.json`）常用字段：
-
-- `search.default_k`：默认召回数量
-- `search.max_search_results`：最大返回来源数量
-- `search.min_source_similarity`：最小来源相似度阈值
-- `db.backend`：历史记录后端，支持 `memory`、`mysql`、`postgresql`
-- `session.backend`：会话后端，支持 `memory`、`redis`
-- `knowledge_base.storage.vector_backend`：向量后端，支持 `faiss`、`zvec`、`numpy`
-- `knowledge_base.chunking.size`：分片长度
-- `knowledge_base.chunking.overlap`：分片重叠长度
-- `knowledge_base.retrieval.candidate_multiplier`：候选召回倍数
-- `knowledge_base.retrieval.min_candidates`：最小候选数
-- `knowledge_base.retrieval.embed_weight`：向量召回权重
-- `knowledge_base.retrieval.rerank_weight`：重排权重
-
-### 多模型接入
-
-通过 `UniversalLLMClient` 支持主流模型服务：
-
-| 提供商 | 示例模型 | `base_url` 示例 |
-| --- | --- | --- |
-| OpenAI | GPT-4, GPT-3.5-Turbo | `https://api.openai.com/v1` |
-| DeepSeek | deepseek-chat, deepseek-coder | `https://api.deepseek.com/v1` |
-| Qwen | qwen-max, qwen-plus | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| Doubao | doubao-pro-32k | `https://ark.cn-beijing.volces.com/api/v3` |
-| xAI | grok-beta | `https://api.x.ai/v1` |
-| Gemini | gemini-pro | `https://generativelanguage.googleapis.com/v1beta` |
-| Kimi | moonshot-v1-32k | `https://api.moonshot.cn/v1` |
-| LM Studio | 本地模型 | `http://localhost:1234/v1` |
-
-建议优先使用 `config.multi-provider.example.json` 作为多模型接入参考模板。
-
-`UniversalLLMClient` 当前基于 OpenAI Python SDK 实现，对 OpenAI 兼容接口统一封装了聊天、流式输出、向量嵌入与重排序能力。
-
-### 支持的文档格式
+## 支持的文档格式
 
 | 格式 | 开源社区版 | 商业授权版 | 说明 |
 | --- | --- | --- | --- |
@@ -308,53 +153,98 @@ python -m src.main --host 127.0.0.1 --port 5000
 | PDF | 仅纯文本 | ✅ | 商业授权支持 OCR |
 | OFD | 仅纯文本 | ✅ | 商业授权支持 OCR |
 
-### Session ID 唯一性
+**知识库管理**
+![](assets/kb.png)
 
-当 `session.backend=redis` 时，会话 ID 由 Redis 原子自增生成，可保证同一用户在高并发与多实例部署下不重复。若 Redis 不可用，会回退为内存生成，仅保证进程内唯一。
+**分片管理**
+![](assets/kb-fp.png)
 
-## 模型与部署建议
+- 模型管理：新增/编辑模型配置、启用/停用、设置默认、连通性测试、初始化预设配置。
+- 
+**模型管理**
+![](assets/model.png)
 
-### 可选解析与 OCR
+页面入口：
 
-社区版以文字识别为主。图片 OCR、扫描件识别等能力属于**商业授权版**，请访问官网了解：[https://framewiki.com/](https://framewiki.com/)。
+- `GET /ui/` 聊天页面
+- `GET /ui/kb.html` 知识库管理
+- `GET /ui/model.html` 模型管理
+
+## API 文档
+
+- 在线文档：`http://127.0.0.1:5000/api-docs` 或 `http://127.0.0.1:5000/docs/`
+- 仓库内接口说明：`docs/API.md`
+- 英文接口说明：`docs/API-EN.md`
+
+**API 文档**
+![](assets/api.png)
+
+## 配置说明
+
+`config.json` 常用字段：
+
+- `knowledge_base`：Embedding/Rerank 模型与检索配置。
+- `db`：历史记录存储后端（`memory` / `mysql` / `postgresql`）。
+- `session`：会话 ID 存储后端（`memory` / `redis`）。
+- `chat_context`：上下文开关与最大轮数。
+- `lm_studio`：LM Studio 连接与超时配置。
+
+## 支持的 AI 模型
+
+通过 `UniversalLLMClient` 支持主流模型服务：
+
+| 提供商 | 示例模型 | 配置示例 |
+| --- | --- | --- |
+| OpenAI | GPT-4, GPT-3.5-Turbo | `base_url: https://api.openai.com/v1` |
+| DeepSeek | deepseek-chat, deepseek-coder | `base_url: https://api.deepseek.com/v1` |
+| Qwen | qwen-max, qwen-plus | `base_url: https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| Doubao | doubao-pro-32k | `base_url: https://ark.cn-beijing.volces.com/api/v3` |
+| xAI | grok-beta | `base_url: https://api.x.ai/v1` |
+| Gemini | gemini-pro | `base_url: https://generativelanguage.googleapis.com/v1beta` |
+| Kimi | moonshot-v1-32k | `base_url: https://api.moonshot.cn/v1` |
+| LM Studio | 本地模型 | `base_url: http://localhost:1234/v1` |
+
+示例见 `config.multi-provider.example.json`。
+
+## 可选解析与 OCR
+
+如需 OCR 或 PDF Marker 能力，请安装 `requirements.optional-parser.txt`。
 
 配置示例文件：[config.multi-provider.example.json](config.multi-provider.example.json)
 
-### OCR 配置
+## OCR 配置
 
-> 以下 OCR 配置仅适用于**商业授权版**。社区版即使写入相关配置也不会启用 OCR。
+OCR 当前支持 `llm` 与 `paddleocr` 两种引擎，通过 `knowledge_base.ocr.engine` 切换。
 
-OCR 支持 `llm` 与 `paddleocr` 两种引擎，通过 `knowledge_base.ocr.engine` 切换。
-
-`llm` 相关的视觉模型参数统一放在 `knowledge_base.ocr.llm` 下，`ocr` 顶层只保留通用开关。
+`llm` 相关的视觉模型参数统一放在 `knowledge_base.ocr.llm` 下，`ocr` 顶层只保留通用开关，不再重复配置这些字段。
 
 ```json
 {
-  "knowledge_base": {
-    "ocr": {
-      "enabled": true,
-      "engine": "llm",
-      "local_files_only": true,
-      "release_after_use": true,
-      "pdf_ocr_dpi": 200,
-      "pdf_ocr_max_pages": 0,
-      "llm": {
-        "model_name": "Qwen/Qwen2-VL-2B-Instruct",
-        "prompt": "请识别图片中的所有内容，并以 markdown 结构化文档返回。",
-        "device": "cpu",
-        "dtype": "auto",
-        "max_new_tokens": 1024,
-        "min_pixels": 0,
-        "max_pixels": 0
-      },
-      "paddleocr": {
-        "lang": "ch",
-        "use_textline_orientation": true,
-        "use_angle_cls": true,
-        "show_log": false
-      }
-    }
+ "knowledge_base": {
+  "ocr": {
+   "enabled": true,
+   "engine": "llm",
+   "local_files_only": true,
+   "release_after_use": true,
+   "pdf_ocr_dpi": 200,
+   "pdf_ocr_max_pages": 0,
+   "llm": {
+    "model_name": "Qwen/Qwen2-VL-2B-Instruct",
+    "prompt": "请识别图片中的所有内容，并以 markdown 结构化文档返回。",
+    "device": "cpu",
+    "dtype": "auto",
+    "max_new_tokens": 1024,
+    "min_pixels": 0,
+    "max_pixels": 0
+   },
+   "paddleocr": {
+    "lang": "ch",
+       "use_textline_orientation": true,
+    "use_angle_cls": true,
+    "show_log": false
+   }
   }
+ }
 }
 ```
 
@@ -365,124 +255,128 @@ OCR 支持 `llm` 与 `paddleocr` 两种引擎，通过 `knowledge_base.ocr.engin
 - 若要求严格本地加载，请保持 `local_files_only=true`。
 - 可选依赖安装与排错说明见 [docs/OPTIONAL_PARSER_SETUP.md](docs/OPTIONAL_PARSER_SETUP.md)。
 
-### Embedding/Reranker 推荐配置
+## Embedding/Reranker 推荐配置
 
 下表为 0.6B / 4B / 8B 模型的推荐部署配置，便于选择合适硬件与参数：
 
 | 规模 | CPU | 内存 | GPU | 适用场景 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| 0.6B | 8 核 | 16GB | 可选（>= 6GB） | 开发、测试、中小数据量 | 本地默认规模 |
+| 0.6B | 8 核 | 16GB | 可选（>= 6GB） | 开发/测试、中小数据 | 本地默认规模 |
 | 4B | 16 核 | 32GB | 建议 >= 12GB | 生产单机、中等并发 | 建议开启 GPU |
-| 8B | 24 核 | 64GB | 建议 >= 24GB | 高质量检索、高并发 | GPU 必开 |
+| 8B | 24 核 | 64GB | 建议 >= 24GB | 高质量检索/高并发 | GPU 必开 |
 
-部署建议：
+配置建议：
 
-- 模型规模越大，GPU 越关键；显存不足时会回退 CPU，响应明显变慢。
-- 模型缓存和向量索引建议放在 SSD，降低加载与检索延迟。
-- 多实例部署建议将 `session.backend` 配置为 `redis`。
-- 首次部署建议先关闭大模型预热，确认服务链路可用后再逐步开启。
+- 规模越大，GPU 越关键；显存不足时会回退 CPU，响应显著变慢。
+- 模型缓存与向量索引建议放 SSD，降低加载和检索延迟。
+- 多实例部署时配合 Redis 作为 session 后端。
 
-### 轻量配置示例
+### config.json 示例
+
+0.6B（轻量默认）：
 
 ```json
 {
-  "knowledge_base": {
-    "storage": {
-      "vector_backend": "zvec",
-      "persist_dir": "./kb_store"
-    },
-    "embedding": {
-      "model": "Qwen/Qwen3-Embedding-0.6B",
-      "device": "auto",
-      "local_files_only": true
-    },
-    "rerank": {
-      "model": "Qwen/Qwen3-Reranker-0.6B",
-      "use_lm_studio": false
-    },
-    "retrieval": {
-      "candidate_multiplier": 8,
-      "min_candidates": 30,
-      "embed_weight": 0.35,
-      "rerank_weight": 0.65
-    }
+ "knowledge_base": {
+  "embedding": {
+   "model": "Qwen/Qwen3-Embedding-0.6B",
+   "device": "auto",
+   "local_files_only": true
+  },
+  "rerank": {
+   "model": "Qwen/Qwen3-Reranker-0.6B",
+   "use_lm_studio": false
+  },
+  "retrieval": {
+   "candidate_multiplier": 8,
+   "min_candidates": 30,
+   "embed_weight": 0.35,
+   "rerank_weight": 0.65
   }
+ }
 }
 ```
 
-## 运维与脚本
+4B（中等规模）：
 
-### 常用脚本
-
-| 脚本 | 用途 |
-| --- | --- |
-| `download_models.py` | 下载基础模型 |
-| `download_optional_parser_models.py` | 下载可选文档解析 / OCR 模型 |
-| `ingest_to_kb_store.py` | 导入文档到知识库存储 |
-| `encrypt_secret.py` | 加密配置中的敏感字段 |
-| `migrate_to_sessions_table.py` | 迁移会话数据结构 |
-| `add_thinking_summary_column.py` | 为数据表补充思考摘要列 |
-| `tune_threshold.py` | 调整检索阈值 |
-
-### Windows 服务
-
-通过 `manage_service.ps1` 管理 Windows 服务：
-
-```powershell
-.\manage_service.ps1 -Command install
-.\manage_service.ps1 -Command start
-.\manage_service.ps1 -Command status
+```json
+{
+ "knowledge_base": {
+  "embedding": {
+   "model": "Qwen/Qwen3-Embedding-4B",
+   "device": "cuda",
+   "local_files_only": true
+  },
+  "rerank": {
+   "model": "Qwen/Qwen3-Reranker-4B",
+   "use_lm_studio": false
+  },
+  "retrieval": {
+   "candidate_multiplier": 6,
+   "min_candidates": 24,
+   "embed_weight": 0.4,
+   "rerank_weight": 0.6
+  }
+ }
+}
 ```
 
-支持命令：`install`、`uninstall`、`start`、`stop`、`restart`、`status`。
+8B（高质量/高并发）：
 
-### Linux systemd 服务
-
-通过 `manage_service.sh` 管理 Linux 服务：
-
-```bash
-./manage_service.sh install
-./manage_service.sh start
-./manage_service.sh status
+```json
+{
+ "knowledge_base": {
+  "embedding": {
+   "model": "Qwen/Qwen3-Embedding-8B",
+   "device": "cuda",
+   "local_files_only": true
+  },
+  "rerank": {
+   "model": "Qwen/Qwen3-Reranker-8B",
+   "use_lm_studio": false
+  },
+  "retrieval": {
+   "candidate_multiplier": 5,
+   "min_candidates": 20,
+   "embed_weight": 0.45,
+   "rerank_weight": 0.55
+  }
+ }
+}
 ```
 
-### 构建与分发
+## Session ID 唯一性
 
-使用 Python 标准构建方式：
+当 `session.backend=redis` 时，会话 ID 由 Redis 原子自增生成，可保证同一用户在高并发与多实例部署下不重复。若 Redis 不可用，会回退为内存生成（仅保证进程内唯一）。
+
+## 数据与存储
+
+- 默认数据目录：`kb_store/`
+- 文档会被切分、向量化并存入 FAISS
+- 元信息以 JSON 形式保存用于检索
+
+## 安全说明
+
+- 建议仅在可信网络内开放 API。
+- 使用 `encrypt_secret.py` 加密 `config.json` 中的密钥。
+
+## 工具脚本
+
+- `encrypt_secret.py`：加密配置密钥
+- `tune_threshold.py`：阈值评估
+
+## 构建与发布
 
 ```bash
 python -m build
 ```
 
-也可以使用仓库内脚本：
+产物位于 `dist/`。
 
-- Windows PowerShell：`build.ps1`
-- Windows CMD：`build.bat`
-- Wheel 构建：`build_wheel.ps1`、`build_wheel.bat`
+## 贡献
 
-构建产物位于 `dist/`。
+欢迎提交 Issue 与 PR。功能变更请同步更新文档。
 
-## 数据与安全
+## 许可
 
-### 数据目录
-
-- 默认知识库目录：`kb_store/`
-- 模型缓存目录：`models/hf_cache/`
-- 日志目录：运行时自动创建于项目目录下
-
-### 安全建议
-
-- 建议仅在可信网络内开放 API。
-- 生产环境请使用反向代理、访问控制和 HTTPS。
-- 配置文件中的 API Key、数据库密码建议使用 `encrypt_secret.py` 处理。
-- 若启用多实例部署，请将 Redis 和数据库放置在受控网络内。
-
-## 贡献与许可
-
-### 贡献
-
-欢迎提交 Issue 与 PR。功能变更时请同步更新文档与配置说明。
-
-### License
-
-MulanPSL-2.0
+MulanPSL2

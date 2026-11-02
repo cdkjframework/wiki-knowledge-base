@@ -6,6 +6,10 @@ import type { RouteRecordRaw } from 'vue-router'
  * 商业控制台仅商业构建注册，便于社区包剔除 views/commercial。
  */
 const isCommercialBuild = import.meta.env.VITE_EDITION === 'commercial'
+// 社区包物理剔除 views/commercial，静态 import 路径会让 Rollup 找不到文件；glob 无匹配时为空对象
+const commercialConsoleLoader = Object.values(
+  import.meta.glob('/src/views/commercial/CommercialConsole.vue'),
+)[0] as (() => Promise<unknown>) | undefined
 
 const layoutChildren: RouteRecordRaw[] = [
   {
@@ -56,7 +60,7 @@ if (isCommercialBuild) {
   layoutChildren.push({
     path: 'commercial',
     name: 'CommercialConsole',
-    component: () => import('@/views/commercial/CommercialConsole.vue'),
+    component: commercialConsoleLoader as never,
     meta: { title: '商业控制台', icon: 'Briefcase', requiresCommercial: true },
   })
 }

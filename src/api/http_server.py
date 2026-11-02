@@ -1465,6 +1465,9 @@ class KnowledgeBaseApi:
                 "只能依据提供的知识库上下文回答问题。"
                 "如果证据不足，请明确回答：根据当前知识库无法确定。"
                 "不要编造，不要脱离上下文扩展。"
+                # KB-12：编号与 _build_context 的 [idx] 一一对应，前端据此渲染可点角标定位来源卡
+                "引用上下文内容时，须在对应句子末尾标注来源编号（如 [1]、[2]），"
+                "编号必须与上下文编号一致，不得编造不存在的编号。"
             )
         return (
             base_intro
@@ -2632,31 +2635,24 @@ class KnowledgeBaseApi:
     def add_uploaded_file(
         self, filename: str, content: bytes, encoding: str | None = None
     ) -> Dict[str, Any]:
-        try:
-            chunks = self.kb.add_uploaded_file(filename=filename, content=content, encoding=encoding)
-            resp = {"ok": True, "chunks_added": int(chunks)}
-            return resp
-        except Exception as exc:
-            raise
+        # 解析失败由 kb 抛 ValueError，HTTP 层转 400，避免静默 chunks_added=0
+        chunks = self.kb.add_uploaded_file(filename=filename, content=content, encoding=encoding)
+        return {"ok": True, "chunks_added": int(chunks)}
 
     def add_uploaded_files(
         self, files: Sequence[Dict[str, Any]], encoding: str | None = None
     ) -> Dict[str, Any]:
-        try:
-            total_chunks = 0
-            for item in files:
-                filename = str(item.get("filename") or "").strip()
-                if not filename:
-                    continue
-                total_chunks += self.kb.add_uploaded_file(
-                    filename=filename,
-                    content=item.get("content") or b"",
-                    encoding=encoding,
-                )
-            resp = {"ok": True, "chunks_added": int(total_chunks)}
-            return resp
-        except Exception as exc:
-            raise
+        total_chunks = 0
+        for item in files:
+            filename = str(item.get("filename") or "").strip()
+            if not filename:
+                continue
+            total_chunks += self.kb.add_uploaded_file(
+                filename=filename,
+                content=item.get("content") or b"",
+                encoding=encoding,
+            )
+        return {"ok": True, "chunks_added": int(total_chunks)}
 
     def list_chunks(
         self,

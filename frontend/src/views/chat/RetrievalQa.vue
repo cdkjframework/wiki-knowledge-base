@@ -115,6 +115,48 @@ function sourceTagType(item: SourceResult) {
   return item.evidence?.passed === false ? 'info' : 'success'
 }
 
+const activeSourceIdx = ref(-1)
+const sourceCardRefs = new Map<number, HTMLElement>()
+
+function setSourceCardRef(idx: number, el: unknown) {
+  if (el instanceof HTMLElement) sourceCardRefs.set(idx, el)
+  else sourceCardRefs.delete(idx)
+}
+
+// KB-12：答案角标 [n] 与来源卡同序（后端上下文编号一致），点击滚动定位到对应分片卡
+function locateSource(msg: ChatMessage, n: number) {
+  const list = msg.sources?.length ? msg.sources : sources.value
+  if (n < 1 || n > list.length) return
+  if (msg.sources?.length) sources.value = msg.sources
+  sourcesExpanded.value = true
+  activeSourceIdx.value = n - 1
+  void nextTick(() => {
+    sourceCardRefs.get(n - 1)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+}
+
+interface AnswerSegment {
+  text: string
+  cite: number
+}
+
+function answerSegments(msg: ChatMessage): AnswerSegment[] {
+  const text = String(msg.content || '')
+  const total = (msg.sources?.length ? msg.sources : sources.value).length
+  const out: AnswerSegment[] = []
+  const re = /\[(\d+)\]/g
+  let last = 0
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const n = Number(m[1])
+    if (n < 1 || n > total) continue
+    if (m.index > last) out.push({ text: text.slice(last, m.index), cite: 0 })
+    out.push({ text: m[0], cite: n })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push({ text: text.slice(last), cite: 0 })
+  return out.length ? out : [{ text, cite: 0 }]
+}
+
 function applySourcesInsufficientFromAnswer(answer: string) {
   const bad = isInsufficientAnswer(answer)
   sourcesInsufficient.value = bad
@@ -612,7 +654,7 @@ onBeforeUnmount(() => {
               </details>
               <div class="qa-msg__content">
                 <span v-if="msg.pending && !String(msg.content || '').trim()" class="qa-pending">正在生成…</span>
-                <pre v-else>{{ msg.content }}</pre>
+                <pre v-else><template v-for="(seg, si) in answerSegments(msg)" :key="si"><button v-if="seg.cite" type="button" class="qa-cite" :class="{ 'is-active': activeSourceIdx === seg.cite - 1 }" title="定位到对应来源分片" @click="locateSource(msg, seg.cite)">{{ seg.text }}</button><span v-else>{{ seg.text }}</span></template></pre>
               </div>
               <div v-if="msg.sources?.length" class="qa-msg__refs">
                 {{ isInsufficientAnswer(msg.content) ? '检索候选' : '引用' }}
@@ -689,10 +731,13 @@ onBeforeUnmount(() => {
           <div
             v-for="(item, idx) in sources"
             :key="`${item.filename}-${idx}`"
+            :ref="(el) => setSourceCardRef(idx, el)"
             class="source-item"
+            :class="{ 'is-active': activeSourceIdx === idx }"
+            @click="activeSourceIdx = idx"
           >
             <div class="source-item__title">
-              <span>{{ item.filename || '未知文件' }}</span>
+              <span>[{{ idx + 1 }}] {{ item.filename || '未知文件' }}</span>
               <el-tag size="small" effect="plain" :type="sourceTagType(item)">
                 {{ sourceScoreText(item) }}
               </el-tag>
@@ -1023,6 +1068,25 @@ onBeforeUnmount(() => {
 .source-item {
   border-top: 1px solid var(--color-border);
   padding: 10px 0;
+  cursor: pointer;
+}
+.source-item.is-active {
+  background: var(--color-primary-subtle);
+  outline: 1px solid var(--color-primary);
+}
+.qa-cite {
+  border: none;
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border-radius: 4px;
+  padding: 0 3px;
+  margin: 0 1px;
+  cursor: pointer;
+  font: inherit;
+}
+.qa-cite.is-active {
+  background: var(--color-primary);
+  color: #fff;
 }
 .source-item__title {
   display: flex;

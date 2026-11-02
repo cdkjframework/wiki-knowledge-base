@@ -3503,6 +3503,19 @@ class KnowledgeBase:
     def _decode_uploaded_text_bytes(data: bytes, encoding: str | None = None) -> str:
         return BaseDocumentParser.decode_uploaded_text_bytes(data, encoding=encoding)
 
+    @staticmethod
+    def _empty_extract_message(filename: str) -> str:
+        """上传有字节但解析结果为空时的用户可见说明。"""
+        ext = Path(filename).suffix.lower()
+        image_exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+        vision_exts = image_exts | {".pdf", ".ofd"}
+        if ext in vision_exts:
+            return (
+                f"未能从「{filename}」提取到可用文字。"
+                "社区版仅支持文字层解析；扫描件/图片/无文字层 PDF 需商业版 OCR（KB-16）。"
+            )
+        return f"未能从「{filename}」提取到可用文字，请确认文件可读且含文本内容。"
+
     def add_uploaded_file(
         self, filename: str, content: bytes, encoding: str | None = None
     ) -> int:
@@ -3527,11 +3540,13 @@ class KnowledgeBase:
                 
         返回值：
             int
-                成功分块的数量。返回 0 表示文件为空或处理失败。
+                成功分块的数量（大于 0）。
         
         异常处理：
             ValueError
                 - filename 为空或无效
+                - 文件内容为空
+                - 有字节但抽不出可用文字（社区无 OCR 时的扫描件/图片等）
                 - 指定的 encoding 无法解码文件
         
         示例用法：
@@ -3547,14 +3562,15 @@ class KnowledgeBase:
             3. 对于二进制文件(.pdf, .docx)：
                - 尝试用二进制提取器提取文本
                - 失败时降级为文本解码处理
-            4. 调用 add_document() 添加到知识库
+            4. 抽不出文字则抛错（不再静默返回 0）
+            5. 调用 add_document() 添加到知识库
         """
         filename_clean = self._normalize_filename(filename)
         if not filename_clean:
             raise ValueError("filename is required")
         data = bytes(content or b"")
         if not data:
-            return 0
+            raise ValueError(f"上传文件「{filename_clean}」内容为空")
 
         try:
             self.save_original_bytes(filename_clean, data)
@@ -3569,6 +3585,9 @@ class KnowledgeBase:
             encoding=encoding,
             temp_dir=upload_tmp_dir,
         )
+        # 文件有字节却抽不出字：别再静默 chunks_added=0，调用方会以为入库成功
+        if not (text or "").strip():
+            raise ValueError(self._empty_extract_message(filename_clean))
         return self.add_document(filename_clean, text)
 
     def list_chunks(

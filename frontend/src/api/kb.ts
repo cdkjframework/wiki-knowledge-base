@@ -68,7 +68,8 @@ export function addDocumentText(filename: string, text: string) {
 export function uploadKbFile(file: File) {
   const form = new FormData()
   form.append('file', file)
-  return post<{ ok: boolean; chunks_added?: number }>('/kb/file', form)
+  // 解析抽不出文字时后端返回 400；成功时 chunks_added 必为大于 0 的整数
+  return post<{ ok: boolean; chunks_added?: number; message?: string }>('/kb/file', form)
 }
 
 export function removeDocument(filename: string) {

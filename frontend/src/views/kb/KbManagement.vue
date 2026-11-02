@@ -223,7 +223,13 @@ async function onUpload(file: File) {
   uploading.value = true
   try {
     const res = await uploadKbFile(file)
-    ElMessage.success(`上传成功，新增分片 ${res.chunks_added ?? '-'}`)
+    const added = Number(res.chunks_added ?? 0)
+    // 后端已对空解析直接 400；这里再兜一层，避免旧响应被当成成功
+    if (added <= 0) {
+      ElMessage.warning(res.message || '未提取到可用文字，未写入分片')
+      return false
+    }
+    ElMessage.success(`上传成功，新增分片 ${added}`)
     await refreshDocs()
     selected.value = file.name
   } catch (err) {
